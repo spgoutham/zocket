@@ -12,6 +12,13 @@ what makes re-runs idempotent: re-inserting a known id is a no-op via
 INSERT OR IGNORE / UPSERT, not a new row. Raw payloads live on disk under
 data/raw/<topic>/<id>.json rather than a DB column -- the id already tells
 you where to find them.
+
+`reliability_score` is one addition beyond the brief's literal field list: a
+rule-based (no ML) proxy for signal quality from HN's own points/comments,
+so a 0-point drive-by comment doesn't count the same as a heavily upvoted,
+heavily discussed post. Column + index only for now -- the formula is
+config in `config.yaml` (`reliability:`), the actual math gets written in
+Stage 2 once points/num_comments are actually being crawled.
 """
 
 from __future__ import annotations
@@ -33,12 +40,14 @@ CREATE TABLE IF NOT EXISTS mentions (
     sentiment           TEXT,
     sentiment_score     REAL,
     category            TEXT,
+    reliability_score   REAL,
     inserted_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_mentions_topic ON mentions(topic);
 CREATE INDEX IF NOT EXISTS idx_mentions_sentiment ON mentions(sentiment);
 CREATE INDEX IF NOT EXISTS idx_mentions_category ON mentions(category);
+CREATE INDEX IF NOT EXISTS idx_mentions_reliability ON mentions(reliability_score);
 """
 
 

@@ -79,6 +79,24 @@ which is what makes re-runs idempotent.
 - **Evaluation (Stage 4)** — hand-label ~25 items, report accuracy + a
   confusion matrix + a short written failure analysis.
 
+### Reliability score (locked now, computed in Stage 2)
+
+One field beyond the brief's literal ask: `reliability_score` (0.0–1.0),
+a rule-based (no ML) proxy for signal quality using HN's own points and
+comment count — so a 0-point drive-by comment doesn't get weighted the same
+as a heavily upvoted, heavily discussed post. In a consumer-research context
+this matters: an analyst reading "sentiment on Chime is negative" should be
+able to tell that from one angry outlier vs. from a post the community
+actually piled onto. Formula (`config.yaml` `reliability:`):
+
+```
+score = min(points / 100, 0.6) + min(num_comments / 50, 0.2) + (0.2 if has_text else 0.0)
+```
+
+Column + config are added now so the schema is ready; the actual math is
+written in Stage 2, once `points`/`num_comments` are actually coming out of
+the crawler.
+
 ### Logging
 
 Structured JSON logs (`pipeline/logging_setup.py`) via the standard library's
@@ -137,6 +155,10 @@ eval/                          hand-labeled sample lands here in Stage 4
   extra schema columns not asked for by the brief). Swapped topics for real
   consumer brands modeled on Zocket's own case studies, and trimmed the
   scaffold back to just what each stage actually needs.
+- Added `reliability_score` (points/comments-based, rule-based, no ML) to
+  the schema + config as a v1 signal-quality proxy — column and formula
+  locked now, actual computation deferred to Stage 2 once the crawler is
+  producing real points/num_comments data.
 - Verified `python -m pipeline` runs end to end against the current stubs
   (loads config, initializes the schema, logs status as JSON).
 - Time spent: `TODO — log actual hours here`.

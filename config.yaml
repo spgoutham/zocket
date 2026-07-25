@@ -73,5 +73,20 @@ classification:
     - id: general
       label: "General / Other"
 
+# v1, rule-based (no ML) proxy for signal quality, using HN's own points/
+# comments -- so a 0-point drive-by comment doesn't count the same as a
+# heavily upvoted, heavily discussed post. Formula locked now; computed in
+# Stage 2 once points/num_comments are actually being crawled (Stage 1).
+#   score = min(points / points_divisor, points_weight_cap)
+#         + min(num_comments / comments_divisor, comments_weight_cap)
+#         + (text_presence_weight if the post has body text, else 0.0)
+#   range: 0.0 (low-signal) -- 1.0 (high-signal, community-validated)
+reliability:
+  points_weight_cap: 0.6
+  points_divisor: 100
+  comments_weight_cap: 0.2
+  comments_divisor: 50
+  text_presence_weight: 0.2
+
 logging:
   level: INFO
