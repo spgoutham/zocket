@@ -18,7 +18,6 @@ structure — no extra modules or invented scope beyond that.
 - [x] Stage 3 — Classify
 - [x] Stage 4 — Evaluate
 - [x] Stage 5 — Summarize + completion gate hardening
-- [ ] Stage 6 — Stretch goals (optional, not started)
 
 ## Quick start
 
