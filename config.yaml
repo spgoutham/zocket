@@ -1,17 +1,31 @@
 # Consumer Research pipeline config.
 # Topics are config-driven, not hard-coded, per the assessment brief (docs/ASSESSMENT_BRIEF.md).
 #
-# Topic pick rationale (documented fully in README.md "Session 0"):
-#   - cloudflare, stripe  -> trust/security-infra brands (my specialty domain: fraud/bot detection)
-#   - shopify, meta_ads   -> martech/commerce brands (Zocket's own product domain)
-#   - openai              -> the AI thread tying the two together
+# Topics are 5 real consumer brands, one per vertical Zocket's own case studies
+# target (Financial Services, FMCG, Retail/D2C, Healthcare, Automotive) --
+# see README.md "Session 0" for why each one was picked.
 #
-# `query` is the literal search string sent to the source API; `label` is the
-# human-readable topic name used everywhere downstream (storage, summary, README).
+# `queries` is a list of literal search strings sent to the source API, one
+# topic can have several variants (see `chime` below) -- results are merged
+# and deduped by HN's own objectID before being capped at target_items.
+# `label` is the human-readable topic name used everywhere downstream
+# (storage, summary, README).
+#
+# Every query is quoted ("Brand") -- unquoted, Algolia treats the last word
+# as a prefix (so "Chime" would also match "Chimera"). Combined with
+# `typo_tolerance: false` below, that stops fuzzy edit-distance matches too
+# (unquoted+typo-tolerant "Chime" was matching "Chine[se]", confirmed by
+# inspecting real crawled titles -- see README "Query-precision finding").
 
 source:
   name: hn_algolia
-  base_url: "https://hn.algolia.com/api/v1/search"
+  # search_by_date, not the default relevance-sorted `search` -- date order
+  # is stable between runs, which is what makes "page N is already cached,
+  # skip it" a safe assumption. No robots.txt on this host (verified,
+  # 404) -- it's a dedicated public JSON API, not scraped HTML.
+  base_url: "https://hn.algolia.com/api/v1/search_by_date"
+  hits_per_page: 20
+  typo_tolerance: false
   # Be a polite crawler: throttle, identify ourselves, retry with backoff.
   request_timeout_seconds: 10
   min_delay_seconds: 1.0        # floor delay between requests, jitter added at request time
@@ -22,35 +36,45 @@ source:
   user_agent: "zocket-intern-assessment/0.1 (contact: gouthamsp0305@gmail.com; research crawl, see README)"
 
 topics:
-  - id: cloudflare
-    label: "Cloudflare"
-    query: "Cloudflare"
-    target_items: 120
-  - id: stripe
-    label: "Stripe"
-    query: "Stripe"
-    target_items: 120
-  - id: shopify
-    label: "Shopify"
-    query: "Shopify"
-    target_items: 120
-  - id: openai
-    label: "OpenAI"
-    query: "OpenAI"
-    target_items: 120
-  - id: meta_ads
-    label: "Meta Ads"
-    query: "Meta ads"
-    target_items: 100
-    # narrower query than the others (marketing-specific angle rather than
-    # the whole "Meta" company) -- revisit sample size once crawl volume is known.
+  - id: chime
+    label: "Chime"
+    # Plain '"Chime"' collides with a defunct Amazon product, a macOS app,
+    # and the literal notification sound -- "Chime" is a common English
+    # word as well as a brand. Two disambiguated variants, merged: real
+    # Chime-the-neobank coverage without the noise. See README.
+    queries:
+      - '"Chime" bank'
+      - '"Chime" fintech'
+    target_items: 80    # Financial Services
+  - id: oatly
+    label: "Oatly"
+    queries:
+      - '"Oatly"'
+    target_items: 80    # FMCG / CPG
+  - id: allbirds
+    label: "Allbirds"
+    queries:
+      - '"Allbirds"'
+    target_items: 80    # Retail / D2C
+  - id: noom
+    label: "Noom"
+    queries:
+      - '"Noom"'
+    target_items: 80    # Healthcare / Wellness
+  - id: rivian
+    label: "Rivian"
+    queries:
+      - '"Rivian"'
+    target_items: 80    # Automotive
 
-# total across topics should stay well under the ~500 item ground rule even
-# if every topic hits its target_items ceiling.
+# 5 topics x 80 target = 400 max, comfortably under the "~500 total" ground
+# rule. If a topic's real HN volume is much lower than 80, that's fine --
+# target_items is a ceiling, not a quota.
 
 storage:
   raw_dir: "data/raw"           # persisted raw payloads, one file per page/request (cache + re-run source of truth)
   db_path: "data/processed/consumer_research.db"
+  summary_path: "summary.md"
 
 # Classification config (taxonomy locked in Session 0; scoring logic lands in Stage 3)
 classification:
@@ -59,22 +83,38 @@ classification:
     positive_threshold: 0.05
     negative_threshold: -0.05
   categories:
-    # Small, explainable keyword taxonomy -- see pipeline/classify/category.py (Stage 3)
-    - id: product_features
-      label: "Product & Features"
-    - id: pricing_billing
-      label: "Pricing & Billing"
-    - id: reliability_incidents
-      label: "Reliability & Incidents"
-    - id: security_trust
-      label: "Security & Trust"
-    - id: business_funding
-      label: "Business & Funding"
-    - id: developer_experience
-      label: "Developer Experience"
+    # Small taxonomy fit to how people actually talk about consumer brands
+    # like these (not a generic dev-tool taxonomy) -- see
+    # pipeline/classify/category.py (Stage 3).
+    - id: product_experience
+      label: "Product Experience"
+    - id: pricing_subscription
+      label: "Pricing & Subscription"
+    - id: customer_service_trust
+      label: "Customer Service & Trust"
+    - id: marketing_advertising
+      label: "Marketing & Advertising"
+    - id: business_news
+      label: "Company & Business News"
+    - id: regulatory
+      label: "Regulatory & Legal"
     - id: general
       label: "General / Other"
 
+# v1, rule-based (no ML) proxy for signal quality, using HN's own points/
+# comments -- so a 0-point drive-by comment doesn't count the same as a
+# heavily upvoted, heavily discussed post. Formula locked now; computed in
+# Stage 2 once points/num_comments are actually being crawled (Stage 1).
+#   score = min(points / points_divisor, points_weight_cap)
+#         + min(num_comments / comments_divisor, comments_weight_cap)
+#         + (text_presence_weight if the post has body text, else 0.0)
+#   range: 0.0 (low-signal) -- 1.0 (high-signal, community-validated)
+reliability:
+  points_weight_cap: 0.6
+  points_divisor: 100
+  comments_weight_cap: 0.2
+  comments_divisor: 50
+  text_presence_weight: 0.2
+
 logging:
   level: INFO
-  format: json

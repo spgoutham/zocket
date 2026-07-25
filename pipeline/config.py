@@ -13,14 +13,14 @@ from dataclasses import dataclass, field
 
 import yaml
 
-REQUIRED_TOP_LEVEL_KEYS = ("source", "topics", "storage", "classification", "logging")
+REQUIRED_TOP_LEVEL_KEYS = ("source", "topics", "storage", "classification", "reliability", "logging")
 
 
 @dataclass
 class Topic:
     id: str
     label: str
-    query: str
+    queries: list[str]
     target_items: int
 
 
@@ -43,6 +43,10 @@ class PipelineConfig:
     @property
     def classification(self) -> dict:
         return self.raw["classification"]
+
+    @property
+    def reliability(self) -> dict:
+        return self.raw["reliability"]
 
     @property
     def logging(self) -> dict:
