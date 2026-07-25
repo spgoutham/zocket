@@ -97,12 +97,15 @@ not just asserted:
   that's a real gap, not an oversight, and it's Goutham's to fill in, not
   something an AI assistant can honestly estimate on his behalf.
 
-Two brief-requested deliverables this repo can't produce on its own:
-a **screen recording** (≤ 5 min, showing a run, the output, and a re-run
-with no duplicates) and, if pursuing the process-fit bonus, actually
-**opening a PR** on GitHub (this work is on `feat/crawl-pipeline`, not
-pushed anywhere yet — pushing/opening a PR needs Goutham's own GitHub
-action, not something to do without asking).
+**☑ Screen recording** — [`docs/demo-recording.mp4`](docs/demo-recording.mp4)
+(~115s, well under the 5-minute cap): a full run end to end, the
+`summary.md` output, and a re-run showing no duplicates.
+
+One brief-requested item this repo still can't produce on its own: if
+pursuing the process-fit bonus, actually **opening a PR** on GitHub (this
+work is on `feat/crawl-pipeline`, not pushed anywhere yet — pushing/opening
+a PR needs Goutham's own GitHub action, not something to do without
+asking).
 
 ## Design decisions (Sessions 0–5)
 
@@ -544,6 +547,11 @@ eval/evaluation_report.txt     committed output of `make evaluate`
   bare checkmark — including the two items this repo genuinely can't
   produce on its own (the screen recording, and actually opening a PR,
   since pushing to GitHub needs Goutham's own action).
+- Addendum, same session: the screen recording was recorded and added
+  (`docs/demo-recording.mp4`, compressed 124MB → 8.8MB via `ffmpeg`,
+  fps 60→15 and downscaled to 1920px wide — same duration, no audio track).
+  Completion Gate updated to link it directly instead of listing it as
+  missing.
 - Time spent: `TODO — log actual hours here`.
 - **What's left, honestly**: every session's "time spent" line is still a
   TODO — that's the one completion-gate item only Goutham can close.
