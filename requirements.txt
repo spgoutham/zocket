@@ -1,7 +1,6 @@
-# Session 0: only what the scaffold needs to run.
 # Added incrementally per stage rather than front-loaded -- see README.md log.
 PyYAML==6.0.2
+requests==2.34.2
 
-# Stage 1 (crawl) will add: requests
 # Stage 3 (classify) will add: vaderSentiment
 # Stage 4/5 (evaluate/summarize) may add: pandas

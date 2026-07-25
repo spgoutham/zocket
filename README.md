@@ -13,7 +13,7 @@ structure — no extra modules or invented scope beyond that.
 ## Status
 
 - [x] Stage 0 — Design decisions + repo scaffold
-- [ ] Stage 1 — Crawl (Extract)
+- [x] Stage 1 — Crawl (Extract)
 - [ ] Stage 2 — Transform + Load
 - [ ] Stage 3 — Classify
 - [ ] Stage 4 — Evaluate
@@ -27,19 +27,26 @@ pip install -r requirements.txt
 make run          # or: python -m pipeline
 ```
 
-Right now `make run` only loads `config.yaml`, sets up logging, and
-initializes the SQLite schema — crawl/classify/summarize are stubs (see
-`pipeline/crawler/`, `pipeline/classify/`, `pipeline/evaluate/`). This section
-gets rewritten as each stage lands so it always reflects what actually runs.
+Right now `make run` loads `config.yaml`, sets up logging, initializes the
+SQLite schema, and crawls all 5 topics from HN Algolia into
+`data/raw/<topic>/page_N.json` (real network calls the first time; a second
+run makes zero network calls because every page is already cached). Classify/
+summarize are still stubs (see `pipeline/classify/`, `pipeline/evaluate/`).
+This section gets rewritten as each stage lands.
 
-## Design decisions (Session 0)
+## Design decisions (Session 0 + Session 1)
 
-### Source: HN Algolia (`hn.algolia.com/api/v1/search`)
+### Source: HN Algolia (`hn.algolia.com/api/v1/search_by_date`)
 
 The brief's recommended default: no auth, real JSON pagination, generous rate
 limits. Reddit's public `.json` endpoints were considered (closer to "real
 consumer chatter") but ruled out — Reddit has tightened unauthenticated API
 access hard since 2023, which is a bad bet for a single-source, ~1-day build.
+No `robots.txt` on this host (checked directly, 404) — it's a dedicated
+public JSON API, not scraped HTML. Uses `search_by_date`, not the default
+relevance-sorted `search`, because relevance order can reshuffle between
+calls, which would break the "page N is already cached, skip it" assumption
+the crawler's caching relies on.
 
 ### Topics (config-driven, see `config.yaml`)
 
@@ -50,11 +57,74 @@ per vertical, each with enough real online chatter to crawl:
 
 | Topic | Vertical | Why |
 |---|---|---|
-| Chime | Financial Services | Neobank with heavy, polarized chatter (no-fee praise vs. account-freeze complaints) — a crawlable stand-in for "regional bank" style case studies. |
+| Chime | Financial Services | Neobank with heavy, polarized chatter (no-fee praise vs. account-freeze complaints) — a crawlable stand-in for "regional bank" style case studies. Also, unintentionally, this session's hardest data-hygiene problem — see below. |
 | Oatly | FMCG / CPG | Plant-based FMCG brand with a genuinely mixed public reaction to its own marketing (Super Bowl ad backlash, sustainability claims). |
 | Allbirds | Retail / D2C | D2C retail brand frequently used as a marketing case study; post-IPO chatter gives real sentiment range. |
 | Noom | Healthcare / Wellness | Wellness/subscription app with strong, split sentiment (weight-loss marketing vs. subscription/cancellation complaints). |
 | Rivian | Automotive | EV brand with active product + business-news discussion. |
+
+### Query-precision finding: "Chime" (Stage 1)
+
+The first real crawl of `Chime` came back **80/80 items about Chinese AI
+policy**, not the neobank. Root-caused by inspecting the actual crawled
+titles (not assumed):
+
+1. Algolia's typo tolerance treats `Chime` and `Chine[se]` as a 1-edit
+   match (`m`↔`n`), and HN currently has a flood of "Chinese AI" stories —
+   completely swamping the real signal.
+2. Unquoted, Algolia also treats the last word of a query as a *prefix*
+   match, so `Chime` was separately matching `Chimera` (as in Chimera Linux).
+
+**Fix, applied to every topic's query, not just this one:** quote the query
+(`"Chime"` — whole-word match, no prefix-stemming) and pass
+`typoTolerance: false` (now `source.typo_tolerance` in `config.yaml`). That
+alone got Oatly/Allbirds/Noom/Rivian to clean results. Chime needed one more
+round: even quoted and typo-strict, it still collided with a **defunct
+Amazon product** (`"Amazon shuts down Chime, its Zoom alternative"`), a
+**macOS app** of the same name, and the literal **notification-chime sound**
+— genuine word collisions, not a query bug.
+
+Tried excluding the obvious collisions (`-Amazon -AirPods -Wind`) — barely
+moved the needle (383→347 hits), because most of the noise wasn't those
+specific collisions, it was "chime" the common word appearing incidentally
+in unrelated posts' body text. What actually worked: **requiring a second,
+disambiguating word** (Algolia treats extra bare words as required, not just
+a ranking boost — confirmed empirically: adding `bank` cut 383 hits down to
+18, and every one of those 18 was genuinely about Chime-the-company).
+
+That led to a small, reusable pattern rather than a one-off hack: a topic
+can now have **multiple query variants** (`config.yaml` `topics[].queries`,
+a list instead of a single string). `fetch_topic()` runs each variant,
+caches its pages separately (`data/raw/<topic>/q<N>/`), and merges the
+results by HN's own `objectID` so a story matching more than one variant
+only counts once. Chime ended up with two variants — `"Chime" bank` and
+`"Chime" fintech` — chosen for coverage (18 + 7 hits, 1 overlap → 22 unique,
+all but a handful directly about the company; the rest are legitimate
+comparison mentions, e.g. "how did companies like Stripe and Brex start,"
+not noise). 22 is below the 80-item ceiling for this topic — same
+"ceiling, not quota" tradeoff already accepted for Oatly (27) and Noom (37):
+fewer clean records beats more polluted ones. This is a v1 — two variants,
+not an exhaustive search for every disambiguating word; more could be added
+later if more recall is needed.
+
+### Crawler mechanics (Stage 1, `pipeline/crawler/hn_algolia.py`)
+
+- **Politeness** — every real request sleeps `min_delay_seconds` + random
+  jitter first (`_throttle`); cache hits don't sleep, since they make no
+  network call at all. A dedicated `User-Agent` identifies the crawler and
+  a contact address.
+- **Resilience** — timeouts/connection errors and HTTP 429/5xx are treated
+  as transient and retried with exponential backoff (`base * 2^attempt`,
+  capped); anything else (a 4xx from a malformed request) fails fast instead
+  of retrying something that will never succeed. Verified for real, not just
+  read: pointed the client at an unresolvable host and confirmed the log
+  shows two backoff attempts (1.0s, then 2.0s) before it raises.
+- **Persist-before-transform + caching** — each page's *entire, untouched*
+  API response is written to `data/raw/<topic>/q<N>/page_<M>.json` before
+  anything is parsed. If that file already exists on a later run, it's read
+  from disk instead of re-fetched — confirmed: a full 5-topic re-run after
+  the first crawl took 0.25s and made zero HTTP requests, vs. ~30s for the
+  first real crawl.
 
 ### Storage: SQLite (`data/processed/consumer_research.db`)
 
@@ -111,7 +181,7 @@ pipeline/
   config.py                    loads + validates config.yaml
   logging_setup.py             structured JSON logging
   __main__.py                  `python -m pipeline` entry point
-  crawler/                     Stage 1 — HN Algolia client (not yet implemented)
+  crawler/hn_algolia.py        Stage 1 — HN Algolia client — implemented
   storage/db.py                SQLite schema (`mentions` table) — implemented
   classify/                    Stage 3 — sentiment.py, category.py (not yet implemented)
   evaluate/                    Stage 4 — compares against hand-labeled sample (not yet implemented)
@@ -137,6 +207,34 @@ eval/                          hand-labeled sample lands here in Stage 4
 6. **Stretch** (time permitting, only if the gate is already solid).
 
 ## Session Log
+
+### Session 1 — 2026-07-25 — Crawl (Extract)
+
+- Verified the API before writing any parsing code: no `robots.txt` on
+  `hn.algolia.com` (404), and pulled real responses to confirm field shapes
+  (`objectID`, `story_text` only present on self-posts, etc.) rather than
+  guessing them.
+- Built `pipeline/crawler/hn_algolia.py`: throttle+jitter before every real
+  request, exponential backoff on transient failures (timeouts/connection
+  errors/429/5xx), persist-raw-payload-before-transform with per-page disk
+  caching. Verified the retry path fires for real (pointed it at an
+  unresolvable host, watched the two backoff attempts in the logs) and that
+  a full re-crawl after caching takes 0.25s and zero network calls, vs. ~30s
+  cold.
+- Ran the crawl for real against all 5 topics — then caught a serious data
+  hygiene problem: `Chime` came back 80/80 items about Chinese AI policy,
+  not the neobank (see the design-decisions writeup above for the full
+  root-cause chain: typo-tolerance + prefix-matching, then a genuine
+  3-way word collision with Amazon Chime / a macOS app / the literal sound).
+  Fixed generally (quoted queries + `typoTolerance: false` for every topic)
+  and specifically for Chime (multi-query-variant crawling: `topics[].queries`
+  is now a list, merged by `objectID`) rather than swapping the topic away
+  from the problem.
+- Re-crawled clean: Chime 22 items (from 0 relevant), Oatly 27, Allbirds 74,
+  Noom 37, Rivian 80 — 240 total, well under the ~500 ground rule.
+- Time spent: `TODO — log actual hours here`.
+- Next session: Stage 2 — Transform + Load (normalize into `mentions`,
+  compute `reliability_score`, dedupe on id, idempotent upsert into SQLite).
 
 ### Session 0 — 2026-07-25 — Design decisions + repo scaffold
 

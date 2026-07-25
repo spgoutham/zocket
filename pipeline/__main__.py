@@ -1,8 +1,8 @@
 """Single entry point for the whole pipeline: `python -m pipeline`.
 
-Session 0 status: config loading, logging, and the storage schema are wired
-up and real. The crawl / classify / summarize stages themselves are stubs
-until their sessions land -- see README.md for the stage-by-stage plan.
+Status: config, logging, storage schema, and Stage 1 (crawl) are real.
+Transform+Load / classify / summarize are still stubs -- see README.md for
+the stage-by-stage plan.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from pipeline.config import load_config
+from pipeline.crawler.hn_algolia import fetch_topic
 from pipeline.logging_setup import setup_logging
 from pipeline.storage.db import get_connection, init_schema
 
@@ -27,8 +28,12 @@ def main() -> None:
     log.info("storage schema ready", extra={"db_path": config.storage["db_path"]})
     conn.close()
 
+    for topic in config.topics:
+        hits = fetch_topic(topic, config.source, config.storage["raw_dir"])
+        log.info("topic crawled", extra={"topic": topic.id, "raw_items": len(hits)})
+
     log.info(
-        "crawl/classify/summarize stages not implemented yet -- "
+        "transform/load, classify, summarize not implemented yet -- "
         "see README.md for the stage-by-stage plan"
     )
 

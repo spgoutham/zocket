@@ -20,7 +20,7 @@ REQUIRED_TOP_LEVEL_KEYS = ("source", "topics", "storage", "classification", "rel
 class Topic:
     id: str
     label: str
-    query: str
+    queries: list[str]
     target_items: int
 
 

@@ -5,12 +5,27 @@
 # target (Financial Services, FMCG, Retail/D2C, Healthcare, Automotive) --
 # see README.md "Session 0" for why each one was picked.
 #
-# `query` is the literal search string sent to the source API; `label` is the
-# human-readable topic name used everywhere downstream (storage, summary, README).
+# `queries` is a list of literal search strings sent to the source API, one
+# topic can have several variants (see `chime` below) -- results are merged
+# and deduped by HN's own objectID before being capped at target_items.
+# `label` is the human-readable topic name used everywhere downstream
+# (storage, summary, README).
+#
+# Every query is quoted ("Brand") -- unquoted, Algolia treats the last word
+# as a prefix (so "Chime" would also match "Chimera"). Combined with
+# `typo_tolerance: false` below, that stops fuzzy edit-distance matches too
+# (unquoted+typo-tolerant "Chime" was matching "Chine[se]", confirmed by
+# inspecting real crawled titles -- see README "Query-precision finding").
 
 source:
   name: hn_algolia
-  base_url: "https://hn.algolia.com/api/v1/search"
+  # search_by_date, not the default relevance-sorted `search` -- date order
+  # is stable between runs, which is what makes "page N is already cached,
+  # skip it" a safe assumption. No robots.txt on this host (verified,
+  # 404) -- it's a dedicated public JSON API, not scraped HTML.
+  base_url: "https://hn.algolia.com/api/v1/search_by_date"
+  hits_per_page: 20
+  typo_tolerance: false
   # Be a polite crawler: throttle, identify ourselves, retry with backoff.
   request_timeout_seconds: 10
   min_delay_seconds: 1.0        # floor delay between requests, jitter added at request time
@@ -23,23 +38,33 @@ source:
 topics:
   - id: chime
     label: "Chime"
-    query: "Chime"
+    # Plain '"Chime"' collides with a defunct Amazon product, a macOS app,
+    # and the literal notification sound -- "Chime" is a common English
+    # word as well as a brand. Two disambiguated variants, merged: real
+    # Chime-the-neobank coverage without the noise. See README.
+    queries:
+      - '"Chime" bank'
+      - '"Chime" fintech'
     target_items: 80    # Financial Services
   - id: oatly
     label: "Oatly"
-    query: "Oatly"
+    queries:
+      - '"Oatly"'
     target_items: 80    # FMCG / CPG
   - id: allbirds
     label: "Allbirds"
-    query: "Allbirds"
+    queries:
+      - '"Allbirds"'
     target_items: 80    # Retail / D2C
   - id: noom
     label: "Noom"
-    query: "Noom"
+    queries:
+      - '"Noom"'
     target_items: 80    # Healthcare / Wellness
   - id: rivian
     label: "Rivian"
-    query: "Rivian"
+    queries:
+      - '"Rivian"'
     target_items: 80    # Automotive
 
 # 5 topics x 80 target = 400 max, comfortably under the "~500 total" ground
