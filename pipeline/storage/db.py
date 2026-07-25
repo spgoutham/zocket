@@ -5,15 +5,13 @@ Stage 2 (Transform + Load) and Stage 3 (Classify), once there's real data to
 push through it. Defining the contract now so those stages build against a
 fixed shape instead of improvising it mid-flight.
 
-Design notes:
-  - `id` is the source-provided stable id (HN object id) and is the PRIMARY
-    KEY, which is what makes re-runs idempotent: re-inserting the same id is
-    a no-op via INSERT OR IGNORE / UPSERT, not a new row.
-  - `category_reasoning` is deliberately not optional decoration: it's the
-    same "explain every decision" instinct as KaizoCore's detection
-    dashboard, applied to a sentiment/category label instead of a bot score.
-  - `raw_ref` points back at the persisted raw payload file so any record
-    can be traced back to exactly what the crawler saw.
+Columns match the assessment brief directly (id, topic, source, author,
+title/text, url, created_at, fetched_at, plus sentiment + category), with
+`id` as the source-provided stable id (HN object id) and PRIMARY KEY -- that's
+what makes re-runs idempotent: re-inserting a known id is a no-op via
+INSERT OR IGNORE / UPSERT, not a new row. Raw payloads live on disk under
+data/raw/<topic>/<id>.json rather than a DB column -- the id already tells
+you where to find them.
 """
 
 from __future__ import annotations
@@ -32,11 +30,9 @@ CREATE TABLE IF NOT EXISTS mentions (
     url                 TEXT,
     created_at          TEXT NOT NULL,
     fetched_at          TEXT NOT NULL,
-    raw_ref             TEXT,
     sentiment           TEXT,
     sentiment_score     REAL,
     category            TEXT,
-    category_reasoning  TEXT,
     inserted_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
