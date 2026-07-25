@@ -1,24 +1,18 @@
-"""SQLite schema for the `mentions` table.
-
-Schema only at this stage (Session 0) -- insert/upsert/query logic belongs to
-Stage 2 (Transform + Load) and Stage 3 (Classify), once there's real data to
-push through it. Defining the contract now so those stages build against a
-fixed shape instead of improvising it mid-flight.
+"""SQLite schema + load for the `mentions` table.
 
 Columns match the assessment brief directly (id, topic, source, author,
 title/text, url, created_at, fetched_at, plus sentiment + category), with
 `id` as the source-provided stable id (HN object id) and PRIMARY KEY -- that's
 what makes re-runs idempotent: re-inserting a known id is a no-op via
-INSERT OR IGNORE / UPSERT, not a new row. Raw payloads live on disk under
-data/raw/<topic>/<id>.json rather than a DB column -- the id already tells
-you where to find them.
+`INSERT OR IGNORE`, not a new row. Raw payloads live on disk under
+data/raw/<topic>/q<N>/page_<M>.json (see pipeline/crawler/) rather than a
+DB column -- pipeline/transform.py reads them back by topic.
 
 `reliability_score` is one addition beyond the brief's literal field list: a
 rule-based (no ML) proxy for signal quality from HN's own points/comments,
 so a 0-point drive-by comment doesn't count the same as a heavily upvoted,
-heavily discussed post. Column + index only for now -- the formula is
-config in `config.yaml` (`reliability:`), the actual math gets written in
-Stage 2 once points/num_comments are actually being crawled.
+heavily discussed post. Computed in pipeline/transform.py, formula is config
+in `config.yaml` (`reliability:`).
 """
 
 from __future__ import annotations
@@ -62,3 +56,31 @@ def get_connection(db_path: str | pathlib.Path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.commit()
+
+
+def upsert_mentions(conn: sqlite3.Connection, records: list[dict]) -> int:
+    """Insert `records`, ignoring any whose id already exists.
+
+    `INSERT OR IGNORE` against the `id` PRIMARY KEY is the whole idempotency
+    mechanism -- re-running with the same (or overlapping) records creates
+    no duplicate rows, no application-level dedup logic required. Returns
+    how many rows were actually newly inserted (via the `total_changes`
+    delta), which is what makes "run it twice, show the counts" provable.
+    """
+    if not records:
+        return 0
+
+    before = conn.total_changes
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO mentions
+            (id, topic, source, author, title, text, url,
+             created_at, fetched_at, reliability_score)
+        VALUES
+            (:id, :topic, :source, :author, :title, :text, :url,
+             :created_at, :fetched_at, :reliability_score)
+        """,
+        records,
+    )
+    conn.commit()
+    return conn.total_changes - before

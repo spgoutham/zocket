@@ -14,7 +14,7 @@ structure — no extra modules or invented scope beyond that.
 
 - [x] Stage 0 — Design decisions + repo scaffold
 - [x] Stage 1 — Crawl (Extract)
-- [ ] Stage 2 — Transform + Load
+- [x] Stage 2 — Transform + Load
 - [ ] Stage 3 — Classify
 - [ ] Stage 4 — Evaluate
 - [ ] Stage 5 — Summarize + completion gate hardening
@@ -28,9 +28,12 @@ make run          # or: python -m pipeline
 ```
 
 Right now `make run` loads `config.yaml`, sets up logging, initializes the
-SQLite schema, and crawls all 5 topics from HN Algolia into
-`data/raw/<topic>/page_N.json` (real network calls the first time; a second
-run makes zero network calls because every page is already cached). Classify/
+SQLite schema, crawls all 5 topics from HN Algolia into
+`data/raw/<topic>/q<N>/page_M.json` (real network calls the first time; a
+second run makes zero network calls because every page is already cached),
+then normalizes + loads every crawled hit into
+`data/processed/consumer_research.db`'s `mentions` table (idempotent —
+re-running inserts nothing new, see the Stage 2 section below). Classify/
 summarize are still stubs (see `pipeline/classify/`, `pipeline/evaluate/`).
 This section gets rewritten as each stage lands.
 
@@ -98,7 +101,7 @@ a list instead of a single string). `fetch_topic()` runs each variant,
 caches its pages separately (`data/raw/<topic>/q<N>/`), and merges the
 results by HN's own `objectID` so a story matching more than one variant
 only counts once. Chime ended up with two variants — `"Chime" bank` and
-`"Chime" fintech` — chosen for coverage (18 + 7 hits, 1 overlap → 22 unique,
+`"Chime" fintech` — chosen for coverage (18 + 7 hits, 3 overlap → 22 unique,
 all but a handful directly about the company; the rest are legitimate
 comparison mentions, e.g. "how did companies like Stripe and Brex start,"
 not noise). 22 is below the 80-item ceiling for this topic — same
@@ -126,14 +129,48 @@ later if more recall is needed.
   the first crawl took 0.25s and made zero HTTP requests, vs. ~30s for the
   first real crawl.
 
-### Storage: SQLite (`data/processed/consumer_research.db`)
+### Transform (Stage 2, `pipeline/transform.py`)
+
+Reads raw hits back from the `data/raw/` files Stage 1 wrote — not Stage 1's
+in-memory return value — so this stage can be re-run, or run standalone,
+without a crawl having just happened in the same process.
+
+- **`fetched_at` is the raw page file's own mtime**, not "now." If
+  `fetched_at` were stamped at transform time, it would be wrong for any
+  record served from Stage 1's cache (i.e. most records on any re-run) —
+  the mtime is the moment that data was actually fetched, and it stays
+  correct no matter how many times the pipeline reruns afterward.
+- **Text cleaning was a real finding, not a guess.** HN's `story_text` is
+  HTML (`<p>` breaks, `&#x27;`-style escaped entities) — confirmed by
+  inspecting real crawled records, several of which had literal `<p>` tags
+  and `&#x27;`/`&amp;` sequences in the body. Both `title` and `text` are
+  HTML-unescaped and tag-stripped before storage, since leftover markup
+  would otherwise pollute Stage 3's sentiment scoring.
+- **`reliability_score` is now real math**, not just a locked column: `score
+  = min(points/100, 0.6) + min(num_comments/50, 0.2) + (0.2 if body text
+  present else 0.0)`, per `config.yaml` `reliability:`.
+- **Sane handling of missing fields, caught by actually looking at the
+  data**: HN's own API is inconsistent about "no url" — sometimes the key
+  is simply absent, sometimes it's a literal `""`. Found by querying the
+  loaded DB (`WHERE url = ''` returned 3 rows even though the crawler never
+  writes empty strings on purpose) and fixed by collapsing both cases to a
+  single `NULL` rather than storing "no url" two different ways. Separately,
+  a hit missing `objectID` or `created_at` (fields with no sane default) is
+  logged and skipped rather than inserted broken or crashing the run —
+  verified with a synthetic malformed hit, not just written and trusted.
+
+### Storage + Load: SQLite (`data/processed/consumer_research.db`)
 
 Single `mentions` table (schema in `pipeline/storage/db.py`), columns
 matching the brief directly: id, topic, source, author, title, text, url,
 created_at, fetched_at, plus sentiment/category. The source-provided id (HN
-object id) is the `PRIMARY KEY` — a second crawl inserts nothing new for
-records already seen (`INSERT OR IGNORE` / upsert, implemented in Stage 2),
-which is what makes re-runs idempotent.
+object id) is the `PRIMARY KEY` — `upsert_mentions()` does a plain
+`INSERT OR IGNORE`, so the primary key itself is the entire dedup mechanism,
+no application-level "have I seen this id before" logic needed. Proven, not
+assumed: running the full pipeline twice against the same cached raw data
+recomputed the same normalized record counts both times (e.g. 25 for Chime,
+across its two query variants) but inserted 0 new rows on the second run —
+`total_mentions` stayed at 240 both times.
 
 ### Classification plan (locked now, implemented in Stage 3)
 
@@ -163,9 +200,8 @@ actually piled onto. Formula (`config.yaml` `reliability:`):
 score = min(points / 100, 0.6) + min(num_comments / 50, 0.2) + (0.2 if has_text else 0.0)
 ```
 
-Column + config are added now so the schema is ready; the actual math is
-written in Stage 2, once `points`/`num_comments` are actually coming out of
-the crawler.
+Implemented in Stage 2 (`pipeline/transform.py`'s `compute_reliability()`) —
+see the Transform section above for the real numbers.
 
 ### Logging
 
@@ -182,7 +218,8 @@ pipeline/
   logging_setup.py             structured JSON logging
   __main__.py                  `python -m pipeline` entry point
   crawler/hn_algolia.py        Stage 1 — HN Algolia client — implemented
-  storage/db.py                SQLite schema (`mentions` table) — implemented
+  transform.py                 Stage 2 — normalize + reliability_score — implemented
+  storage/db.py                SQLite schema + upsert_mentions() — implemented
   classify/                    Stage 3 — sentiment.py, category.py (not yet implemented)
   evaluate/                    Stage 4 — compares against hand-labeled sample (not yet implemented)
 data/raw/                      persisted raw payloads (gitignored, regenerable via `make run`)
@@ -207,6 +244,37 @@ eval/                          hand-labeled sample lands here in Stage 4
 6. **Stretch** (time permitting, only if the gate is already solid).
 
 ## Session Log
+
+### Session 2 — 2026-07-25 — Transform + Load
+
+- Built `pipeline/transform.py`: reads raw hits back from `data/raw/` (not
+  Stage 1's in-memory return value, so this stage is independently
+  re-runnable), cleans HTML out of `title`/`text` (a real finding —
+  `story_text` came back with literal `<p>` tags and `&#x27;`-style
+  entities in several crawled records), and computes the real
+  `reliability_score` from each hit's `points`/`num_comments`.
+- `fetched_at` is the raw page file's mtime, not "now" — so it stays correct
+  even for records served from Stage 1's cache on a later run, instead of
+  getting re-stamped with today's date every time the pipeline reruns.
+- Added `upsert_mentions()` to `pipeline/storage/db.py`: a plain
+  `INSERT OR IGNORE` against the `id` primary key. No app-level dedup logic
+  — the schema itself is the entire idempotency mechanism.
+- Caught a second data-hygiene issue by querying the loaded DB rather than
+  assuming it was clean: HN's API sometimes omits `url` entirely and
+  sometimes sends back a literal `""` — both mean "no url," but were being
+  stored as two different values. Fixed by collapsing both to `NULL`.
+- Verified a malformed hit (missing `objectID`) is logged and skipped
+  rather than crashing the run or inserting a broken row.
+- Proved idempotency, not just claimed it: ran the full pipeline twice —
+  same normalized record counts both times (e.g. 25 for Chime, across its
+  two query variants), 0 new inserts the second time, `total_mentions`
+  stayed at 240.
+- Corrected a small inaccuracy from the Session 1 log: Chime's two query
+  variants were said to overlap by 1 record; the real number, visible once
+  Stage 2 actually merged them, is 3 (18 + 7 − 22 unique).
+- Time spent: `TODO — log actual hours here`.
+- Next session: Stage 3 — Classify (VADER sentiment + keyword category
+  tagger).
 
 ### Session 1 — 2026-07-25 — Crawl (Extract)
 
