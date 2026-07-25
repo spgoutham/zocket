@@ -10,6 +10,14 @@ Built stage by stage on purpose, closely following the brief's own
 Part 1 (Crawl) / Part 2 (Transform + Load) / Part 3 (Classify + Summarize)
 structure — no extra modules or invented scope beyond that.
 
+## Demo Video
+
+
+
+https://github.com/user-attachments/assets/f8ca5e29-a541-4b78-8c7a-ad9a3ed0ad3f
+
+
+
 ## Status
 
 - [x] Stage 0 — Design decisions + repo scaffold
