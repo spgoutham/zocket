@@ -78,7 +78,14 @@ def main() -> None:
     update_classifications(conn, updates)
     log.info("classification complete", extra={"classified": len(updates)})
 
-    summary = generate_summary(conn, total_crawled=total_records_this_run)
+    topic_labels = {t.id: t.label for t in config.topics}
+    category_labels = {c["id"]: c["label"] for c in config.classification["categories"]}
+    summary = generate_summary(
+        conn,
+        total_crawled=total_records_this_run,
+        topic_labels=topic_labels,
+        category_labels=category_labels,
+    )
     summary_path = pathlib.Path(config.storage["summary_path"])
     summary_path.write_text(summary)
     log.info("summary written", extra={"summary_path": str(summary_path)})
