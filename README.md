@@ -16,7 +16,7 @@ structure — no extra modules or invented scope beyond that.
 - [x] Stage 1 — Crawl (Extract)
 - [x] Stage 2 — Transform + Load
 - [x] Stage 3 — Classify
-- [ ] Stage 4 — Evaluate
+- [x] Stage 4 — Evaluate
 - [ ] Stage 5 — Summarize + completion gate hardening
 - [ ] Stage 6 — Stretch goals (optional)
 
@@ -35,11 +35,12 @@ then normalizes + loads every crawled hit into
 `data/processed/consumer_research.db`'s `mentions` table (idempotent —
 re-running inserts nothing new, see the Stage 2 section below), then
 classifies every row with sentiment (VADER) + category (keyword rules),
-overwriting `sentiment`/`sentiment_score`/`category` every run. Summarize is
-still a stub (see `pipeline/evaluate/`). This section gets rewritten as each
-stage lands.
+overwriting `sentiment`/`sentiment_score`/`category` every run. `make
+evaluate` compares the classifier against a 25-item hand-labeled sample
+(see the Evaluate section below). Summarize is still a stub. This section
+gets rewritten as each stage lands.
 
-## Design decisions (Session 0 + Session 1 + Session 2)
+## Design decisions (Sessions 0–3)
 
 ### Source: HN Algolia (`hn.algolia.com/api/v1/search_by_date`)
 
@@ -210,8 +211,120 @@ across its two query variants) but inserted 0 new rows on the second run —
   is milliseconds of work, and always-fresh means a retuned keyword list or
   threshold takes effect on the very next run instead of being frozen by
   whatever the first run happened to write.
-- **Evaluation (Stage 4)** — hand-label ~25 items, report accuracy + a
-  confusion matrix + a short written failure analysis.
+- **Evaluation** — see the Evaluate section below.
+
+### Evaluate (Stage 4, `pipeline/evaluate/`)
+
+**Methodology.** `sample.py` draws a stratified sample — 5 records per
+topic, seeded (reproducible) — writing `eval/labeled_sample.csv` with only
+`id/topic/title/text/url`, deliberately *not* the classifier's own
+sentiment/category. I hand-labeled all 25 by reading the actual title+text
+before looking at what the classifier had assigned — blind to the
+prediction at labeling time, specifically to avoid anchoring on it. Labeling
+philosophy, stated explicitly because it affects what "correct" means here:
+sentiment was judged on the text's *surface emotional tone*, the same thing
+VADER is actually designed to detect — not a deeper "is this objectively
+good/bad news for the company" business judgment. Several headlines are
+objectively bad news for the brand (a reverse stock split, an asset
+fire-sale) but stated in dry, neutral journalistic language with no
+emotionally-charged words; those got labeled `neutral`, matching what a
+lexicon tool could plausibly be expected to detect, not what an equity
+analyst would conclude. `score.py` then pulls the classifier's real stored
+labels for those same 25 ids and reports accuracy + a confusion matrix for
+both fields. Full output committed at `eval/evaluation_report.txt`
+(reproducible: `make evaluate`).
+
+**One honest caveat on the ground truth itself**: these 25 labels were
+produced by me (the AI assistant building this pipeline) via careful
+independent reading, not by Goutham personally or an independent third-party
+annotator. That's a real limitation of this evaluation's rigor, disclosed
+rather than glossed over — `eval/labeled_sample.csv` is plain CSV
+specifically so it's easy to open, disagree with any row, and correct it.
+
+**Results:**
+
+| | Accuracy |
+|---|---|
+| Sentiment | 13/25 (52%) |
+| Category | 11/25 (44%) |
+
+Sentiment confusion matrix (rows = true, columns = predicted):
+
+| true \ pred | negative | neutral | positive |
+|---|---|---|---|
+| negative | 1 | 3 | 3 |
+| neutral | 0 | 9 | 3 |
+| positive | 0 | 3 | 3 |
+
+Category confusion matrix (rows = true, columns = predicted; `business_news` → `business`, `customer_service_trust` → `cust.svc`, `marketing_advertising` → `marketing`, `pricing_subscription` → `pricing`, `product_experience` → `product`):
+
+| true \ pred | business | cust.svc | general | marketing | pricing | product |
+|---|---|---|---|---|---|---|
+| business_news | 6 | 0 | 7 | 0 | 0 | 0 |
+| customer_service_trust | 0 | 0 | 2 | 0 | 0 | 1 |
+| general | 1 | 1 | 0 | 0 | 1 | 1 |
+| marketing_advertising | 0 | 0 | 0 | 2 | 0 | 0 |
+| pricing_subscription | 0 | 0 | 0 | 0 | 0 | 0 |
+| product_experience | 0 | 0 | 0 | 0 | 0 | 3 |
+
+**Where it fails — sentiment (verified by testing the exact words in
+isolation, not guessed):**
+
+- VADER's lexicon scores individual words positively regardless of the
+  context they actually appear in: `"valued"` alone scores +0.44 (fires
+  inside "Allbirds, once valued at $4B, just sold its assets for next to
+  nothing" — a headline about a company's value collapsing to nothing,
+  scored *positive* at 0.56); `"fine"` alone scores +0.20 (fires inside
+  "Read the Fine Print," a cautionary idiom, not praise); `"top"` alone
+  scores +0.20 (fires inside "Top AI Mobile Test Automation Tools," a
+  generic listicle title with no sentiment about the brand at all). A
+  lexicon has no notion of financial narrative, idiom, or superlative-as-
+  filler-word.
+- Dry, neutral-toned reporting of objectively negative company events scores
+  exactly `0.0`: "Noom lays off more employees amid CFO departure" — no
+  single word in that sentence carries lexicon charge, so it lands neutral
+  even though a human reads it as bad news for the company.
+- Short, title-only records (most of the dataset has no `story_text`) mean
+  a single strong or weak lexicon word can swing the entire record's label
+  — there's little other text to average against.
+
+**Where it fails — category (also verified, not guessed):**
+
+- **A concrete substring collision, exactly the tradeoff flagged when the
+  keyword list was written**: `"Noom's Tech Evaluation: Top AI Mobile Test
+  Automation Tools"` was tagged `business_news` because `"valuation"` is a
+  literal substring of `"Evaluation"`. Confirmed by testing the matcher
+  directly against that title.
+- **Incomplete verb coverage for the same real-world event**: business-news
+  keywords included `raise`/`raised`/`funding`/`stock`/`valuation`, but not
+  `grant` ("Noom Receives NIH Grant"), `seed round`, or `unlocked`
+  ("Unlocked Another $1B from Volkswagen") — same underlying kind of event
+  (company gets money), different verb choice by the headline writer, no
+  keyword hit.
+- **A missing taxonomy bucket, not just a missing keyword**: "Oatly Slams EU
+  over 'dairy ban'" is a regulatory/legal conflict — a real recurring kind
+  of consumer-brand story this taxonomy has no category for at all.
+- **Tangential/comparison mentions** (a topic brand referenced only as a
+  comparison point for a *different* subject, e.g. "QOA... to do for
+  chocolate what Oatly did for milk") don't cleanly belong to any category
+  — as much a labeling-methodology ambiguity as a classifier failure.
+
+**A crawl-precision finding, traced back to Stage 1 by careful
+hand-labeling — the most valuable thing this evaluation surfaced.** 3 of
+the 5 sampled Chime records turned out to be about nothing to do with the
+company at all: they matched because the text used **"chime in"** (the
+common English idiom for "to comment"), not the Chime brand — surviving
+even Stage 1's quoting/typo-tolerance/disambiguating-word fixes, because
+none of those fixes target this specific idiom. I tested the obvious query
+fix — excluding the exact phrase (`-"chime in"`) — and it's **not
+supported**: Algolia's `advancedSyntax` only excludes single bare words
+(confirmed: `-tor` correctly removed one item; `-"chime in"` collapsed
+results to zero, evidently breaking query parsing rather than excluding the
+phrase). A real fix would need a downstream text heuristic (e.g. flag a
+record if "chime" only ever appears as part of "chime in" and nowhere else)
+rather than a crawl-query change — noted here as a recommendation for
+future work, not implemented now, to keep this stage scoped to evaluation
+rather than sliding back into re-engineering Stage 1 mid-Stage-4.
 
 ### Reliability score (locked now, computed in Stage 2)
 
@@ -249,10 +362,12 @@ pipeline/
   storage/db.py                SQLite schema, upsert_mentions(), update_classifications() — implemented
   classify/sentiment.py        Stage 3 — VADER sentiment — implemented
   classify/category.py         Stage 3 — keyword category tagger — implemented
-  evaluate/                    Stage 4 — compares against hand-labeled sample (not yet implemented)
+  evaluate/sample.py           Stage 4 — draws + writes the labeling sample — implemented
+  evaluate/score.py            Stage 4 — accuracy + confusion matrix — implemented
 data/raw/                      persisted raw payloads (gitignored, regenerable via `make run`)
 data/processed/                SQLite db (gitignored during dev, revisit at Stage 5)
-eval/                          hand-labeled sample lands here in Stage 4
+eval/labeled_sample.csv        25 hand-labeled records (committed — this is the ground truth)
+eval/evaluation_report.txt     committed output of `make evaluate`
 ```
 
 ## Stage plan (what's next)
@@ -272,6 +387,38 @@ eval/                          hand-labeled sample lands here in Stage 4
 6. **Stretch** (time permitting, only if the gate is already solid).
 
 ## Session Log
+
+### Session 4 — 2026-07-26 — Evaluate
+
+- Built `pipeline/evaluate/sample.py` (seeded stratified sample, 5/topic) and
+  `pipeline/evaluate/score.py` (accuracy + confusion matrix), plus a
+  `make evaluate` target.
+- Hand-labeled all 25 sampled records by reading the actual title+text
+  *before* looking at the classifier's stored output, to avoid anchoring —
+  documented that procedure and its one real limitation (the labels are
+  mine, i.e. the AI assistant's, not Goutham's own independent judgment;
+  `eval/labeled_sample.csv` is left as plain, easy-to-correct CSV because of
+  that).
+- Real results: sentiment 13/25 (52%), category 11/25 (44%). Full report
+  committed at `eval/evaluation_report.txt`.
+- Root-caused every sentiment/category mismatch rather than just reporting
+  the miss rate — verified specific failure mechanisms by testing isolated
+  words against VADER directly (`"valued"`, `"fine"`, `"top"` all carry
+  lexicon-level positive scores regardless of context) and by testing the
+  category matcher directly (`"valuation"` is a literal substring of
+  `"Evaluation"` — a live instance of the exact substring-collision tradeoff
+  flagged back when the taxonomy was written).
+- Found something bigger while hand-labeling: 3 of 5 sampled Chime records
+  were about nothing to do with the company — matched via the idiom "chime
+  in," surviving Stage 1's earlier fixes. Tested the obvious query-side fix
+  (excluding the exact phrase) and confirmed it doesn't work — Algolia's
+  `advancedSyntax` only supports excluding single bare words, not quoted
+  phrases. Documented as a recommendation for future work (a downstream
+  text heuristic) rather than reopening Stage 1 mid-evaluation.
+- Time spent: `TODO — log actual hours here`.
+- Next session: Stage 5 — Summarize + completion gate hardening (analyst
+  summary, clean-clone verification, run-twice-no-dupes proof, finalize this
+  README as the submission document).
 
 ### Session 3 — 2026-07-26 — Classify
 
