@@ -15,7 +15,7 @@ structure — no extra modules or invented scope beyond that.
 - [x] Stage 0 — Design decisions + repo scaffold
 - [x] Stage 1 — Crawl (Extract)
 - [x] Stage 2 — Transform + Load
-- [ ] Stage 3 — Classify
+- [x] Stage 3 — Classify
 - [ ] Stage 4 — Evaluate
 - [ ] Stage 5 — Summarize + completion gate hardening
 - [ ] Stage 6 — Stretch goals (optional)
@@ -33,11 +33,13 @@ SQLite schema, crawls all 5 topics from HN Algolia into
 second run makes zero network calls because every page is already cached),
 then normalizes + loads every crawled hit into
 `data/processed/consumer_research.db`'s `mentions` table (idempotent —
-re-running inserts nothing new, see the Stage 2 section below). Classify/
-summarize are still stubs (see `pipeline/classify/`, `pipeline/evaluate/`).
-This section gets rewritten as each stage lands.
+re-running inserts nothing new, see the Stage 2 section below), then
+classifies every row with sentiment (VADER) + category (keyword rules),
+overwriting `sentiment`/`sentiment_score`/`category` every run. Summarize is
+still a stub (see `pipeline/evaluate/`). This section gets rewritten as each
+stage lands.
 
-## Design decisions (Session 0 + Session 1)
+## Design decisions (Session 0 + Session 1 + Session 2)
 
 ### Source: HN Algolia (`hn.algolia.com/api/v1/search_by_date`)
 
@@ -172,17 +174,42 @@ recomputed the same normalized record counts both times (e.g. 25 for Chime,
 across its two query variants) but inserted 0 new rows on the second run —
 `total_mentions` stayed at 240 both times.
 
-### Classification plan (locked now, implemented in Stage 3)
+### Classify (Stage 3, `pipeline/classify/`)
 
-- **Sentiment** — VADER (off-the-shelf, allowed by the brief; training a
-  custom model is explicitly out of scope). Standard compound-score
-  thresholds: `>= 0.05` positive, `<= -0.05` negative, else neutral, run
-  against `title + text`.
-- **Category** — a small keyword-based taxonomy (`config.yaml`
-  `classification.categories`): Product Experience, Pricing & Subscription,
-  Customer Service & Trust, Marketing & Advertising, Company & Business News,
-  General/Other. Picked to fit how people actually talk about consumer
-  brands, not a generic dev-tool taxonomy.
+- **Sentiment (`sentiment.py`)** — VADER (off-the-shelf, allowed by the
+  brief; training a custom model is explicitly out of scope), run against
+  `title + text`. Thresholds are VADER's own documented defaults
+  (`config.yaml`): compound `>= 0.05` positive, `<= -0.05` negative, else
+  neutral. Final distribution across all 240 records: 140 neutral, 74
+  positive, 26 negative.
+- **Category (`category.py`)** — a keyword-based taxonomy built by reading
+  the actual 240 crawled titles first, not guessed: Product Experience,
+  Pricing & Subscription, Customer Service & Trust, Marketing &
+  Advertising, Company & Business News, General/Other. A record is scored
+  against every category by counting keyword hits (simple substring match,
+  not whole-word — a deliberate, documented simplification); most hits wins,
+  ties broken by category order, zero hits anywhere → General. Final
+  distribution: General 116, Business News 56, Product Experience 40,
+  Customer Service & Trust 10, Marketing & Advertising 9, Pricing &
+  Subscription 9. General is the plurality because plenty of crawled
+  records are terse link-only titles with no body text and no clean keyword
+  signal — a real, expected property of keyword rules, not a bug.
+- **Caught and fixed two real gaps by reading actual output, not by
+  guessing**: (1) "Chime is laying off 12%" and "Noom is laying off 10-15%"
+  both fell to General because the keyword list had `layoff`/`lays off` but
+  not the phrasing `laying off` — added. (2) A genuine angry complaint
+  ("shit out of luck", "highly illegal", funds "stuck") fell to General
+  because none of the Customer Service & Trust keywords matched that
+  phrasing — added `stuck`/`illegal`. Deliberately stopped tuning after
+  these two rather than hand-fitting the list to every spot-checked
+  example — systematic gaps are what Stage 4's hand-labeled evaluation is
+  for, not endless manual patching.
+- **Idempotency note** — classification always recomputes and overwrites
+  every row on every run (an `UPDATE`, not an `INSERT`, so it can't create
+  duplicate rows either way). Deliberate: re-classifying ~240 short records
+  is milliseconds of work, and always-fresh means a retuned keyword list or
+  threshold takes effect on the very next run instead of being frozen by
+  whatever the first run happened to write.
 - **Evaluation (Stage 4)** — hand-label ~25 items, report accuracy + a
   confusion matrix + a short written failure analysis.
 
@@ -219,8 +246,9 @@ pipeline/
   __main__.py                  `python -m pipeline` entry point
   crawler/hn_algolia.py        Stage 1 — HN Algolia client — implemented
   transform.py                 Stage 2 — normalize + reliability_score — implemented
-  storage/db.py                SQLite schema + upsert_mentions() — implemented
-  classify/                    Stage 3 — sentiment.py, category.py (not yet implemented)
+  storage/db.py                SQLite schema, upsert_mentions(), update_classifications() — implemented
+  classify/sentiment.py        Stage 3 — VADER sentiment — implemented
+  classify/category.py         Stage 3 — keyword category tagger — implemented
   evaluate/                    Stage 4 — compares against hand-labeled sample (not yet implemented)
 data/raw/                      persisted raw payloads (gitignored, regenerable via `make run`)
 data/processed/                SQLite db (gitignored during dev, revisit at Stage 5)
@@ -244,6 +272,33 @@ eval/                          hand-labeled sample lands here in Stage 4
 6. **Stretch** (time permitting, only if the gate is already solid).
 
 ## Session Log
+
+### Session 3 — 2026-07-26 — Classify
+
+- Pulled all 240 crawled titles first and read them before writing any
+  keyword list — same discipline as the Stage 1 query work, not guessing
+  what the data looks like.
+- Built `pipeline/classify/sentiment.py` (VADER, thresholds from
+  `config.yaml`) and `pipeline/classify/category.py` (6-category keyword
+  taxonomy, built from the real titles). Wired both into `__main__.py`:
+  fetch every row, classify, bulk `UPDATE` via a new
+  `update_classifications()` in `pipeline/storage/db.py`.
+- Classification always recomputes and overwrites every row on every run —
+  an `UPDATE`, so it can't duplicate rows regardless, and always-fresh
+  means a retuned keyword list takes effect on the next run rather than
+  being frozen by the first one.
+- Spot-checked real output against real titles rather than trusting it:
+  found and fixed two genuine keyword-coverage gaps ("laying off" phrasing,
+  and a complaint post using "stuck"/"illegal" instead of any of the
+  Customer Service & Trust keywords already in the list). Deliberately
+  stopped tuning after those two — further gaps are Stage 4's job to
+  quantify systematically, not something to chase by hand.
+- Final distribution: sentiment 140 neutral / 74 positive / 26 negative;
+  category General 116, Business News 56, Product Experience 40, Customer
+  Service & Trust 10, Marketing & Advertising 9, Pricing & Subscription 9.
+- Time spent: `TODO — log actual hours here`.
+- Next session: Stage 4 — Evaluate (hand-label ~25 items, accuracy +
+  confusion matrix + written failure analysis).
 
 ### Session 2 — 2026-07-25 — Transform + Load
 

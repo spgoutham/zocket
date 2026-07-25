@@ -84,3 +84,28 @@ def upsert_mentions(conn: sqlite3.Connection, records: list[dict]) -> int:
     )
     conn.commit()
     return conn.total_changes - before
+
+
+def fetch_for_classification(conn: sqlite3.Connection) -> list[tuple[str, str, str | None]]:
+    """Return (id, title, text) for every row -- the input classify needs."""
+    return conn.execute("SELECT id, title, text FROM mentions").fetchall()
+
+
+def update_classifications(conn: sqlite3.Connection, updates: list[dict]) -> None:
+    """Write sentiment/sentiment_score/category back onto existing rows.
+
+    An UPDATE, not an INSERT -- classification never creates rows, so it
+    can't violate the load step's dedup guarantee. Always recomputed and
+    overwritten on every run (classifying ~240 short records is
+    milliseconds of work) rather than skipped for already-classified rows,
+    so an improved classifier or retuned thresholds take effect on the next
+    run without needing a reset.
+    """
+    if not updates:
+        return
+    conn.executemany(
+        "UPDATE mentions SET sentiment=:sentiment, sentiment_score=:sentiment_score, "
+        "category=:category WHERE id=:id",
+        updates,
+    )
+    conn.commit()
