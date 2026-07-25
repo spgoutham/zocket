@@ -44,6 +44,18 @@ and `summary.md` are committed, so you can inspect real output without
 running anything — `make run` regenerates them identically (see "Proof of
 idempotency" below).
 
+**Windows note**: `make` isn't a native Windows command, and `time`/`rm -rf`
+are shell builtins that don't exist in PowerShell either. Skip `make`
+entirely and run the underlying commands directly — they're plain Python,
+no Make required:
+
+```powershell
+pip install -r requirements.txt
+python -m pipeline                       # equivalent to `make run`
+python -m pipeline.evaluate.sample        # equivalent to `make evaluate`, step 1
+python -m pipeline.evaluate.score         # equivalent to `make evaluate`, step 2
+```
+
 ## Completion Gate
 
 Checked against the brief's own gate, with real evidence for each line —
