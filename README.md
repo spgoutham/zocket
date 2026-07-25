@@ -21,11 +21,25 @@ structure — no extra modules or invented scope beyond that.
 
 ## Quick start
 
+**To just run it and see the result** (2 commands, works on Mac/Linux/Windows — no `make` required):
+
+```
+pip install -r requirements.txt
+python -m pipeline
+```
+
+Then open **`summary.md`** — that's the whole output an analyst needs.
+The terminal will scroll through technical logs while it runs (~30
+seconds on first run); that's expected structured logging, not something
+you need to read — just wait for it to finish and open the file.
+
+**Full setup from a clean clone:**
+
 ```bash
 git clone <this repo>
 cd Zocket
 pip install -r requirements.txt
-make run          # or: python -m pipeline
+python -m pipeline          # or: make run, if you have Make installed
 ```
 
 That's the whole pipeline, end to end, one command: loads `config.yaml`,
@@ -35,14 +49,19 @@ calls because every page is already cached — see the Crawl section),
 normalizes + loads every hit into `data/processed/consumer_research.db`
 (idempotent — re-running inserts nothing new, see Transform + Load), then
 classifies every row with sentiment (VADER) + category (keyword rules,
-overwritten fresh every run), then writes `summary.md` — the analyst-facing
-output. `make evaluate` separately compares the classifier against the
-25-item hand-labeled sample in `eval/`.
+overwritten fresh every run), then writes `summary.md`. Separately:
+
+```bash
+python -m pipeline.evaluate.sample   # or: make evaluate (runs both steps)
+python -m pipeline.evaluate.score
+```
+
+compares the classifier against the 25-item hand-labeled sample in `eval/`.
 
 The generated dataset (`data/raw/`, `data/processed/consumer_research.db`)
 and `summary.md` are committed, so you can inspect real output without
-running anything — `make run` regenerates them identically (see "Proof of
-idempotency" below).
+running anything — `python -m pipeline` regenerates them identically (see
+"Proof of idempotency" below).
 
 ## Completion Gate
 

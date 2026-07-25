@@ -11,7 +11,16 @@ import datetime
 import sqlite3
 
 
-def generate_summary(conn: sqlite3.Connection, total_crawled: int) -> str:
+def generate_summary(
+    conn: sqlite3.Connection,
+    total_crawled: int,
+    topic_labels: dict[str, str],
+    category_labels: dict[str, str],
+) -> str:
+    """topic_labels / category_labels map the internal snake_case ids stored
+    in the DB (e.g. "customer_service_trust") to the human-readable labels
+    from config.yaml (e.g. "Customer Service & Trust") -- this is the
+    analyst-facing artifact, so it should never show a raw id."""
     total_deduped = conn.execute("SELECT COUNT(*) FROM mentions").fetchone()[0]
     generated_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -38,7 +47,7 @@ def generate_summary(conn: sqlite3.Connection, total_crawled: int) -> str:
     for category, count in conn.execute(
         "SELECT category, COUNT(*) FROM mentions GROUP BY category ORDER BY COUNT(*) DESC"
     ):
-        lines.append(f"| {category} | {count} |")
+        lines.append(f"| {category_labels.get(category, category)} | {count} |")
 
     lines += [
         "",
@@ -57,14 +66,14 @@ def generate_summary(conn: sqlite3.Connection, total_crawled: int) -> str:
             ).fetchall()
         )
         lines.append(
-            f"| {topic} | {counts.get('positive', 0)} | {counts.get('neutral', 0)} "
-            f"| {counts.get('negative', 0)} |"
+            f"| {topic_labels.get(topic, topic)} | {counts.get('positive', 0)} "
+            f"| {counts.get('neutral', 0)} | {counts.get('negative', 0)} |"
         )
 
     lines += ["", "## Top 3 items per topic (by reliability_score)", ""]
 
     for topic in topics:
-        lines.append(f"### {topic}")
+        lines.append(f"### {topic_labels.get(topic, topic)}")
         lines.append("")
         top_rows = conn.execute(
             "SELECT title, sentiment, category, reliability_score, url FROM mentions "
@@ -73,7 +82,8 @@ def generate_summary(conn: sqlite3.Connection, total_crawled: int) -> str:
         ).fetchall()
         for title, sentiment, category, score, url in top_rows:
             link = f" — {url}" if url else ""
-            lines.append(f"- **{title}** ({sentiment}, {category}, reliability {score:.2f}){link}")
+            category_label = category_labels.get(category, category)
+            lines.append(f"- **{title}** ({sentiment}, {category_label}, reliability {score:.2f}){link}")
         lines.append("")
 
     return "\n".join(lines)
