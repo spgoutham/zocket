@@ -1,0 +1,80 @@
+# Consumer Research pipeline config.
+# Topics are config-driven, not hard-coded, per the assessment brief (docs/ASSESSMENT_BRIEF.md).
+#
+# Topic pick rationale (documented fully in README.md "Session 0"):
+#   - cloudflare, stripe  -> trust/security-infra brands (my specialty domain: fraud/bot detection)
+#   - shopify, meta_ads   -> martech/commerce brands (Zocket's own product domain)
+#   - openai              -> the AI thread tying the two together
+#
+# `query` is the literal search string sent to the source API; `label` is the
+# human-readable topic name used everywhere downstream (storage, summary, README).
+
+source:
+  name: hn_algolia
+  base_url: "https://hn.algolia.com/api/v1/search"
+  # Be a polite crawler: throttle, identify ourselves, retry with backoff.
+  request_timeout_seconds: 10
+  min_delay_seconds: 1.0        # floor delay between requests, jitter added at request time
+  jitter_seconds: 0.5
+  max_retries: 5
+  backoff_base_seconds: 2.0     # exponential backoff: base * 2^attempt, capped below
+  backoff_max_seconds: 60.0
+  user_agent: "zocket-intern-assessment/0.1 (contact: gouthamsp0305@gmail.com; research crawl, see README)"
+
+topics:
+  - id: cloudflare
+    label: "Cloudflare"
+    query: "Cloudflare"
+    target_items: 120
+  - id: stripe
+    label: "Stripe"
+    query: "Stripe"
+    target_items: 120
+  - id: shopify
+    label: "Shopify"
+    query: "Shopify"
+    target_items: 120
+  - id: openai
+    label: "OpenAI"
+    query: "OpenAI"
+    target_items: 120
+  - id: meta_ads
+    label: "Meta Ads"
+    query: "Meta ads"
+    target_items: 100
+    # narrower query than the others (marketing-specific angle rather than
+    # the whole "Meta" company) -- revisit sample size once crawl volume is known.
+
+# total across topics should stay well under the ~500 item ground rule even
+# if every topic hits its target_items ceiling.
+
+storage:
+  raw_dir: "data/raw"           # persisted raw payloads, one file per page/request (cache + re-run source of truth)
+  db_path: "data/processed/consumer_research.db"
+
+# Classification config (taxonomy locked in Session 0; scoring logic lands in Stage 3)
+classification:
+  sentiment:
+    method: vader
+    positive_threshold: 0.05
+    negative_threshold: -0.05
+  categories:
+    # Small, explainable keyword taxonomy -- see pipeline/classify/category.py (Stage 3)
+    - id: product_features
+      label: "Product & Features"
+    - id: pricing_billing
+      label: "Pricing & Billing"
+    - id: reliability_incidents
+      label: "Reliability & Incidents"
+    - id: security_trust
+      label: "Security & Trust"
+    - id: business_funding
+      label: "Business & Funding"
+    - id: developer_experience
+      label: "Developer Experience"
+    - id: general
+      label: "General / Other"
+
+logging:
+  level: INFO
+  format: json
