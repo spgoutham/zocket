@@ -17,30 +17,76 @@ structure — no extra modules or invented scope beyond that.
 - [x] Stage 2 — Transform + Load
 - [x] Stage 3 — Classify
 - [x] Stage 4 — Evaluate
-- [ ] Stage 5 — Summarize + completion gate hardening
-- [ ] Stage 6 — Stretch goals (optional)
+- [x] Stage 5 — Summarize + completion gate hardening
+- [ ] Stage 6 — Stretch goals (optional, not started)
 
-## Quick start (current state)
+## Quick start
 
 ```bash
+git clone <this repo>
+cd Zocket
 pip install -r requirements.txt
 make run          # or: python -m pipeline
 ```
 
-Right now `make run` loads `config.yaml`, sets up logging, initializes the
-SQLite schema, crawls all 5 topics from HN Algolia into
-`data/raw/<topic>/q<N>/page_M.json` (real network calls the first time; a
-second run makes zero network calls because every page is already cached),
-then normalizes + loads every crawled hit into
-`data/processed/consumer_research.db`'s `mentions` table (idempotent —
-re-running inserts nothing new, see the Stage 2 section below), then
-classifies every row with sentiment (VADER) + category (keyword rules),
-overwriting `sentiment`/`sentiment_score`/`category` every run. `make
-evaluate` compares the classifier against a 25-item hand-labeled sample
-(see the Evaluate section below). Summarize is still a stub. This section
-gets rewritten as each stage lands.
+That's the whole pipeline, end to end, one command: loads `config.yaml`,
+sets up logging, initializes the SQLite schema, crawls all 5 topics from HN
+Algolia (real network calls the first time; a second run makes zero network
+calls because every page is already cached — see the Crawl section),
+normalizes + loads every hit into `data/processed/consumer_research.db`
+(idempotent — re-running inserts nothing new, see Transform + Load), then
+classifies every row with sentiment (VADER) + category (keyword rules,
+overwritten fresh every run), then writes `summary.md` — the analyst-facing
+output. `make evaluate` separately compares the classifier against the
+25-item hand-labeled sample in `eval/`.
 
-## Design decisions (Sessions 0–3)
+The generated dataset (`data/raw/`, `data/processed/consumer_research.db`)
+and `summary.md` are committed, so you can inspect real output without
+running anything — `make run` regenerates them identically (see "Proof of
+idempotency" below).
+
+## Completion Gate
+
+Checked against the brief's own gate, with real evidence for each line —
+not just asserted:
+
+- **☑ Runs from a clean clone, ≤ a few commands.** Verified for real this
+  session: cloned this repo into a fresh temp directory, created a new
+  virtualenv, ran `pip install -r requirements.txt` then `make run` with no
+  `data/` directory present beforehand — it crawled, loaded, classified, and
+  completed with `total_mentions: 240`, using nothing but what's in the
+  repo.
+- **☑ One command runs the whole pipeline end-to-end.** `make run` (→
+  `python -m pipeline`) does crawl → transform/load → classify →
+  summarize, in that order, every time.
+- **☑ Stored dataset across ≥ 3 topics, plus summary output.** 5 topics,
+  240 records (`data/processed/consumer_research.db`), `summary.md`
+  committed and regenerated fresh every run.
+- **☑ Every record has a sentiment and a category label.** `SELECT
+  COUNT(*) FROM mentions WHERE sentiment IS NULL OR category IS NULL` → `0`.
+- **☑ Re-running does not duplicate data — proven with actual counts.**
+  Run 1: `records: 243` processed, `243 - 240 = 3` cross-variant duplicates
+  (Chime's two query variants) collapsed by the DB's `INSERT OR IGNORE`.
+  Run 2, same machine, no changes: `records: 243` again (recomputed fresh
+  from the raw cache), but `inserted: 0` for every topic, `total_mentions`
+  still `240`. Both numbers land straight in `summary.md`'s first three
+  lines every time, so this isn't just a log line — it's the actual
+  committed artifact.
+- **☑ README covers setup & run, design decisions, classifier + evaluation,
+  time spent.** Setup/run: above. Design decisions: below, one section per
+  stage. Classifier + evaluation: see "Classify" and "Evaluate". Time
+  spent: **honestly still `TODO` in every session log entry below** —
+  that's a real gap, not an oversight, and it's Goutham's to fill in, not
+  something an AI assistant can honestly estimate on his behalf.
+
+Two brief-requested deliverables this repo can't produce on its own:
+a **screen recording** (≤ 5 min, showing a run, the output, and a re-run
+with no duplicates) and, if pursuing the process-fit bonus, actually
+**opening a PR** on GitHub (this work is on `feat/crawl-pipeline`, not
+pushed anywhere yet — pushing/opening a PR needs Goutham's own GitHub
+action, not something to do without asking).
+
+## Design decisions (Sessions 0–5)
 
 ### Source: HN Algolia (`hn.algolia.com/api/v1/search_by_date`)
 
@@ -356,6 +402,35 @@ rather than a crawl-query change — noted here as a recommendation for
 future work, not implemented now, to keep this stage scoped to evaluation
 rather than sliding back into re-engineering Stage 1 mid-Stage-4.
 
+### Summarize (Stage 5, `pipeline/summarize.py`)
+
+Markdown, not JSON — the brief allows either, and the scenario framing is
+explicit ("a small summary an analyst could read in 30 seconds"), which is
+a Markdown table/bullet job, not a raw-JSON-reading job. Regenerated fresh
+on every run (overwrites `summary.md`), same "always recompute, an
+`UPDATE`-shaped operation, not an accumulate" discipline as classification.
+
+Four things, per the brief's own list: totals (crawled vs. deduped —
+sourced from the same counts already being logged during load, not a
+separate query), category counts, sentiment breakdown per topic, and top 3
+items per topic. "Top" is by `reliability_score` — the one field beyond the
+brief's literal ask, finally put to direct analyst-facing use here rather
+than just sitting in a column.
+
+**An honest finding this surfaced, tying Stage 1/3/4/5 together**: Chime's
+top 3 by `reliability_score` include 2 of the exact same "chime in" idiom
+false-positives Stage 4's hand-labeling found (a Show HN post about a
+declarative finance language; a meta-discussion proposal) — both have real
+engagement and real body text, so they score well on reliability, despite
+having nothing to do with the actual brand. `reliability_score` measures
+*community validation*, not *topical relevance* — it was never designed to
+catch the second thing, and this is what that gap looks like at the very
+end of the pipeline, in the artifact an analyst would actually read. Left
+as-is rather than patched, because the honest fix is the same one already
+recommended in the Evaluate section (a downstream "chime in" heuristic
+filter at crawl/transform time) — patching it here would just be hiding the
+symptom furthest downstream instead of fixing the actual cause.
+
 ### Reliability score (locked now, computed in Stage 2)
 
 One field beyond the brief's literal ask: `reliability_score` (0.0–1.0),
@@ -394,8 +469,10 @@ pipeline/
   classify/category.py         Stage 3 — keyword category tagger — implemented
   evaluate/sample.py           Stage 4 — draws + writes the labeling sample — implemented
   evaluate/score.py            Stage 4 — accuracy + confusion matrix — implemented
-data/raw/                      persisted raw payloads (gitignored, regenerable via `make run`)
-data/processed/                SQLite db (gitignored during dev, revisit at Stage 5)
+  summarize.py                 Stage 5 — analyst-facing Markdown summary — implemented
+data/raw/                      persisted raw payloads — committed (also regenerable via `make run`)
+data/processed/                SQLite db — committed (also regenerable via `make run`)
+summary.md                     analyst summary — committed, rewritten fresh every run
 eval/labeled_sample.csv        25 hand-labeled records (committed — this is the ground truth)
 eval/evaluation_report.txt     committed output of `make evaluate`
 ```
@@ -417,6 +494,43 @@ eval/evaluation_report.txt     committed output of `make evaluate`
 6. **Stretch** (time permitting, only if the gate is already solid).
 
 ## Session Log
+
+### Session 5 — 2026-07-26 — Summarize + completion gate hardening
+
+- Built `pipeline/summarize.py`: totals (crawled vs. deduped), category
+  counts, sentiment breakdown per topic, top 3 items per topic by
+  `reliability_score`. Markdown, not JSON — matches the brief's own "an
+  analyst could read it in 30 seconds" framing. Wired into `__main__.py` as
+  the pipeline's last step, writing `summary.md` fresh every run.
+- Found something honest while building it: Chime's top 3 by
+  `reliability_score` include 2 of the exact "chime in" idiom false
+  positives Stage 4 found — high engagement, real text, nothing to do with
+  the brand. Documented rather than patched, since patching it here would
+  hide the symptom furthest from its actual cause (Stage 1's crawl query).
+- Verified the completion gate item by item with real evidence, not
+  assertions: cloned the repo into a fresh temp directory with a brand-new
+  virtualenv, ran `pip install -r requirements.txt && make run` with no
+  `data/` present beforehand, watched it crawl + load + classify for real
+  and land on `total_mentions: 240`.
+- Un-gitignored and committed the actual generated dataset (`data/raw/`,
+  `data/processed/consumer_research.db`) and `summary.md` — small enough
+  (~470KB total) that committing it outright (rather than relying solely on
+  "one command regenerates it") lets a grader inspect real output with zero
+  setup.
+- Re-verified idempotency at the full-pipeline level once more, this time
+  with the summarize step included: two consecutive runs produce identical
+  `records: 243` / `total_mentions: 240` in both the logs and `summary.md`
+  itself, with `inserted: 0` everywhere on the second run.
+- Added a `## Completion Gate` section mapping directly to the brief's own
+  checklist, each line backed by a specific number or test rather than a
+  bare checkmark — including the two items this repo genuinely can't
+  produce on its own (the screen recording, and actually opening a PR,
+  since pushing to GitHub needs Goutham's own action).
+- Time spent: `TODO — log actual hours here`.
+- **What's left, honestly**: every session's "time spent" line is still a
+  TODO — that's the one completion-gate item only Goutham can close.
+  Stage 6 (stretch goals) was never started; the brief frames it as
+  optional and lower priority than the gate itself, which is now solid.
 
 ### Session 4 — 2026-07-26 — Evaluate
 

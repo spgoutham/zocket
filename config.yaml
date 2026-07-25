@@ -74,6 +74,7 @@ topics:
 storage:
   raw_dir: "data/raw"           # persisted raw payloads, one file per page/request (cache + re-run source of truth)
   db_path: "data/processed/consumer_research.db"
+  summary_path: "summary.md"
 
 # Classification config (taxonomy locked in Session 0; scoring logic lands in Stage 3)
 classification:

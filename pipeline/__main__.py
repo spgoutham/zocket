@@ -1,13 +1,14 @@
 """Single entry point for the whole pipeline: `python -m pipeline`.
 
 Status: config, logging, storage schema, Stage 1 (crawl), Stage 2
-(transform + load), and Stage 3 (classify) are real. Summarize is still a
-stub -- see README.md for the stage-by-stage plan.
+(transform + load), Stage 3 (classify), and Stage 4's summarize step are
+all real -- this is the full pipeline end to end.
 """
 
 from __future__ import annotations
 
 import logging
+import pathlib
 
 from pipeline.classify.category import classify_category
 from pipeline.classify.sentiment import classify_sentiment
@@ -21,6 +22,7 @@ from pipeline.storage.db import (
     update_classifications,
     upsert_mentions,
 )
+from pipeline.summarize import generate_summary
 from pipeline.transform import iter_raw_hits, normalize_hit
 
 log = logging.getLogger("pipeline.main")
@@ -36,6 +38,7 @@ def main() -> None:
     init_schema(conn)
     log.info("storage schema ready", extra={"db_path": config.storage["db_path"]})
 
+    total_records_this_run = 0
     for topic in config.topics:
         hits = fetch_topic(topic, config.source, config.storage["raw_dir"])
         log.info("topic crawled", extra={"topic": topic.id, "raw_items": len(hits)})
@@ -49,6 +52,7 @@ def main() -> None:
                 records.append(record)
 
         inserted = upsert_mentions(conn, records)
+        total_records_this_run += len(records)
         log.info(
             "topic loaded",
             extra={"topic": topic.id, "records": len(records), "inserted": inserted},
@@ -74,9 +78,12 @@ def main() -> None:
     update_classifications(conn, updates)
     log.info("classification complete", extra={"classified": len(updates)})
 
-    conn.close()
+    summary = generate_summary(conn, total_crawled=total_records_this_run)
+    summary_path = pathlib.Path(config.storage["summary_path"])
+    summary_path.write_text(summary)
+    log.info("summary written", extra={"summary_path": str(summary_path)})
 
-    log.info("summarize not implemented yet -- see README.md for the stage-by-stage plan")
+    conn.close()
 
 
 if __name__ == "__main__":
