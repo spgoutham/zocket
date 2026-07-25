@@ -95,6 +95,8 @@ classification:
       label: "Marketing & Advertising"
     - id: business_news
       label: "Company & Business News"
+    - id: regulatory
+      label: "Regulatory & Legal"
     - id: general
       label: "General / Other"
 

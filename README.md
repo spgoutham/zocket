@@ -241,7 +241,7 @@ annotator. That's a real limitation of this evaluation's rigor, disclosed
 rather than glossed over — `eval/labeled_sample.csv` is plain CSV
 specifically so it's easy to open, disagree with any row, and correct it.
 
-**Results:**
+**Results (v1 — original classifier):**
 
 | | Accuracy |
 |---|---|
@@ -308,6 +308,36 @@ isolation, not guessed):**
   comparison point for a *different* subject, e.g. "QOA... to do for
   chocolate what Oatly did for milk") don't cleanly belong to any category
   — as much a labeling-methodology ambiguity as a classifier failure.
+
+**Fixes applied immediately after evaluation, category accuracy 44% → 60%
+(11/25 → 15/25; sentiment untouched, still 52%).** Three targeted changes to
+`pipeline/classify/category.py` and `config.yaml`, directly from the
+findings above:
+
+1. Switched from plain substring matching to left-anchored word-boundary
+   regex (`\bkeyword`, not `keyword in text`) — fixes the `valuation` ⊂
+   `Evaluation` collision.
+2. Added the missing verbs found above: `grant`, `unlocked`.
+3. Added a new `regulatory` category (`lawsuit`, `court`, `fcc`, `banned`) —
+   closes the missing-taxonomy-bucket gap. Note: this does *not* fix the
+   specific "Oatly Slams EU over 'dairy ban'" example — none of those four
+   words literally appear in that title. The category bucket now exists;
+   this particular case still needs a keyword this list doesn't have yet.
+
+**A regression caught before it shipped.** The first attempt used a *full*
+word boundary on both sides (`\bkeyword\b`). That fixed the substring bug
+but broke something else: several keywords are deliberately partial words
+meant to catch inflected forms — `"rebrand"` matching "rebrands"/
+"rebranding", `"advertis"` matching "advertising", `"unveil"` matching
+"unveils". A full boundary requires a non-word character immediately
+*after* the keyword too, which inflected suffixes violate, so all three
+silently stopped matching. Caught by testing `re.search(r'\brebrand\b',
+'rebrands')` directly — it returned `False`. Switched to a *left-only*
+boundary (`\bkeyword`, no trailing `\b`): still blocks the original bug
+(nothing precedes "valuation" mid-word in "Evaluation" the way "E" does)
+while restoring every inflected match. Verified both properties directly
+before re-running the full pipeline. Full before/after output, including
+this regression note, committed at `eval/evaluation_report.txt`.
 
 **A crawl-precision finding, traced back to Stage 1 by careful
 hand-labeling — the most valuable thing this evaluation surfaced.** 3 of
@@ -415,6 +445,20 @@ eval/evaluation_report.txt     committed output of `make evaluate`
   `advancedSyntax` only supports excluding single bare words, not quoted
   phrases. Documented as a recommendation for future work (a downstream
   text heuristic) rather than reopening Stage 1 mid-evaluation.
+- Acted on the findings in the same session: switched `category.py` to
+  word-boundary regex matching, added the missing `grant`/`unlocked`
+  keywords, and added a new `regulatory` category. First attempt (full
+  `\bkeyword\b` boundary) fixed the substring bug but silently broke
+  intentional stem-matching (`rebrand`→`rebrands`, `advertis`→`advertising`)
+  — caught by testing directly, fixed by switching to a left-only boundary.
+  Re-ran the full pipeline + evaluation: category accuracy 44% → 60%
+  (sentiment untouched, still 52%). Both versions kept in
+  `eval/evaluation_report.txt` as a before/after record.
+- Near-miss: a verification command accidentally deleted
+  `eval/labeled_sample.csv` before it was committed. No data lost —
+  `sample.py` is seeded, so the exact same 25 records regenerated and the
+  same labels were reapplied — but committed immediately afterward instead
+  of continuing to run more commands first.
 - Time spent: `TODO — log actual hours here`.
 - Next session: Stage 5 — Summarize + completion gate hardening (analyst
   summary, clean-clone verification, run-twice-no-dupes proof, finalize this

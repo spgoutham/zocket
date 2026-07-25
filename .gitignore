@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-
+interview.md
 # Raw crawl cache + the SQLite db are regenerable from scratch via `make run`;
 # keeping them out of git while iterating so commits stay reviewable. Revisit
 # at Stage 5 -- the completion gate wants the generated dataset committed (or
