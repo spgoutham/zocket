@@ -79,3 +79,151 @@ Fixed by this round (present in v1's mismatch list, gone from v2's):
       both sides broke "rebrand" matching "rebrands") and was restored by
       switching to left-boundary-only matching. Caught before this file was
       committed -- see README for the full story.
+
+================================================================
+v3 -- sentiment domain-event adjustment layer added (pipeline/classify/
+sentiment.py: +/-0.35 compound-score nudge for unambiguous company-event
+phrases VADER's word-lexicon can't see -- e.g. "layoff", "raises",
+"unlocked $1B" -- derived from the *same* business_news/customer_service_
+trust keyword lists already in category.py, not new/invented terms). Also
+added "ban" to the `regulatory` category (closes the exact gap v2 flagged:
+"Oatly Slams EU over 'dairy ban'" had no matching keyword).
+================================================================
+
+Sentiment: 17/25 correct (68%)   [up from 52% -- +4 correct out of 25]
+true\pred                   negative     neutral    positive
+negative                           2           2           3
+neutral                            0           9           3
+positive                           0           0           6
+
+Category: 15/25 correct (60%)   [unchanged count from v2 -- "ban" swapped
+which specific rows are right/wrong rather than adding net-new correct
+ones; see the caught regression below]
+true\pred                 business_n  customer_s     general  marketing_  pricing_su  product_ex  regulatory
+business_news                      8           0           4           0           0           0           1
+customer_service_trust             0           0           3           0           0           0           0
+general                            0           0           2           0           1           1           0
+marketing_advertising              0           0           0           2           0           0           0
+pricing_subscription               0           0           0           0           0           0           0
+product_experience                 0           0           0           0           0           3           0
+regulatory                         0           0           0           0           0           0           0
+
+13/25 rows had at least one mismatch (down from 16):
+  [47785990] true=(neutral, business_news) pred=(neutral, general) -- From shoe company to AI compute infrastructure. What do you think abou
+  [47597151] true=(negative, business_news) pred=(positive, business_news) -- Allbirds, once valued at $4B, just sold its assets for next to nothing
+  [47778734] true=(neutral, business_news) pred=(neutral, general) -- Allbirds (NAQD: BIRD) pivots from shoes to AI data centeres
+  [40472844] true=(negative, customer_service_trust) pred=(positive, general) -- CashApp, Chime, Solo: If You Bank at a Non-Bank, Read the Fine Print
+  [22724227] true=(neutral, general) pred=(positive, general) -- Ask HN: Could we create a Tor-like system for debit/credit cards?
+  [4896716] true=(positive, general) pred=(positive, pricing_subscription) -- Proposal: HWIGS HN: How would I get started
+  [45040458] true=(neutral, general) pred=(positive, general) -- Noom's Tech Evaluation: Top AI Mobile Test Automation Tools (August 20
+  [45987508] true=(neutral, general) pred=(neutral, product_experience) -- Building an AI-powered health app (think Noom meets symptom tracking)
+  [27732050] true=(negative, customer_service_trust) pred=(neutral, general) -- The Dark Side of Noom
+  [29016992] true=(positive, business_news) pred=(positive, general) -- QOA brings in seed round to do for chocolate what Oatly did for milk
+  [26415082] true=(negative, customer_service_trust) pred=(positive, general) -- Oatly Responds in Defense of Its Ingredients
+  [24894880] true=(negative, business_news) pred=(neutral, regulatory) -- Oatly Slams EU over 'dairy ban'  <- category bucket now correct-ish
+      (regulatory exists and fires), sentiment still wrong: "slams" isn't in
+      the negative-event keyword list (deliberately not added just to pass
+      this one row -- see sentiment.py docstring on eval-set reuse).
+  [43002183] true=(neutral, business_news) pred=(positive, general) -- You Can Buy a Rivian Van Now Because Amazon Flaked on Their Contract
+
+Fixed by this round (present in v2's mismatch list, gone from v3's):
+  [33189152]  Noom lays off more employees amid CFO departure  -- sentiment
+      neutral -> negative, "lays off" keyword fired.
+  [44511743]  Rivian spinoff Also raises another $200M          -- sentiment
+      neutral -> positive, "raises" keyword fired.
+  [43969335]  Rivian Just Unlocked Another $1B from Volkswagen  -- sentiment
+      neutral -> positive, "unlocked" keyword fired.
+No regressions: v3's mismatch set is a strict subset of v2's (13 of the
+same 16 rows), not a different set with new misses swapped in.
+
+A regression caught before it shipped, same pattern as the rebrand/rebrands
+bug in v2. Adding "ban" (left-anchored, like every other keyword) initially
+matched "Bank"/"banking" too -- "ban" is a left-anchored prefix of "bank"
+the same way "valuation" is a substring of "Evaluation" -- which would have
+mislabeled nearly every Chime post (Chime *is* a bank) as `regulatory`.
+Caught by testing `classify_category("Chime is a great banking app")`
+before committing; fixed with a full \b...\b boundary for this one specific
+keyword (pipeline/classify/category.py, `_FULL_BOUNDARY_KEYWORDS`), leaving
+every other keyword's intentional left-anchor stem-matching untouched.
+
+================================================================
+v3.1 -- two general bug fixes, found by root-causing specific v3 mismatches
+but verified dataset-wide before being called fixes (not tuned to just
+these rows). No new keywords/taxonomy added this round.
+================================================================
+
+1. Smart-quote normalization (pipeline/classify/sentiment.py). Root-caused
+   why [24894880] "Oatly Slams EU over 'dairy ban'" scored neutral despite
+   "ban" being a real, strongly negative VADER lexicon word (-0.5574 in
+   isolation): HN's title uses a Unicode curly closing quote (U+2019) glued
+   to "ban", and VADER's tokenizer treats "ban'" (curly) as a different,
+   unrecognized token from "ban" -- confirmed directly:
+   polarity_scores("ban'") [straight quote] = -0.5574, polarity_scores(
+   "ban'") [curly quote, U+2019] = 0.0. Checked how many records this could
+   plausibly affect before calling it "fixed": 11/240 (4.6%) contain a
+   smart quote or apostrophe anywhere in title+text. Fix: translate smart
+   punctuation to ASCII equivalents before scoring (a small explicit map,
+   not a blanket Unicode normalization that could distort real words).
+
+2. Full word-boundary for "fee" (pipeline/classify/category.py), same bug
+   class as "ban"/"bank" in v3, found a second time -- this time by
+   auditing every real "\bfee" hit in the dataset rather than by
+   inspection: 13 hits total, 11 were "feedback"/"feel"/"feels"/"feeling"
+   (false positives from "fee" being a left-anchored prefix), only 2 were a
+   real "fee" ("license fee of $0.", "form fee (still..."). Checked "fees"
+   (plural) doesn't appear anywhere in the dataset before adding it to
+   `_FULL_BOUNDARY_KEYWORDS` -- confirmed nothing real was lost.
+
+Sentiment: 18/25 correct (72%)   [up from 68% -- +1 correct out of 25,
+  [24894880]'s sentiment flips negative->negative (was neutral)]
+true\pred                   negative     neutral    positive
+negative                           3           1           3
+neutral                            0           9           3
+positive                           0           0           6
+
+Category: 15/25 correct (60%)   [unchanged count -- [4896716]'s wrong
+  prediction shifted from pricing_subscription to product_experience
+  (the "fee"/"feel free to chime in" false match is gone), still wrong
+  either way against true=general, but the dataset-wide "fee" false-positive
+  rate this fix actually targets isn't visible in this 25-row sample]
+
+13/25 rows had at least one mismatch (same 13 rows as v3 -- this round
+fixed one field on one row without changing which rows have a mismatch):
+  [47785990] true=(neutral, business_news) pred=(neutral, general)
+  [47597151] true=(negative, business_news) pred=(positive, business_news)
+  [47778734] true=(neutral, business_news) pred=(neutral, general)
+  [40472844] true=(negative, customer_service_trust) pred=(positive, general)
+  [22724227] true=(neutral, general) pred=(positive, general)
+  [4896716] true=(positive, general) pred=(positive, product_experience)
+  [45040458] true=(neutral, general) pred=(positive, general)
+  [45987508] true=(neutral, general) pred=(neutral, product_experience)
+  [27732050] true=(negative, customer_service_trust) pred=(neutral, general)
+  [29016992] true=(positive, business_news) pred=(positive, general)
+  [26415082] true=(negative, customer_service_trust) pred=(positive, general)
+  [24894880] true=(negative, business_news) pred=(negative, regulatory) -- sentiment now correct
+  [43002183] true=(neutral, business_news) pred=(positive, general)
+
+Root cause verified for every remaining sentiment miss (all tested in
+isolation, none guessed):
+  [47597151] "valued" scores +0.44 alone (context-blind lexicon)
+  [40472844] "fine" scores +0.20 alone (idiom, "fine print")
+  [22724227] long neutral body text (co-op/card-number discussion) drifts
+      to +0.9455 combined -- no single dramatic word, cumulative tilt from
+      many mildly-positive neutral technical phrases across a long body
+  [45040458] "top" scores +0.20 alone (superlative-as-filler)
+  [27732050] zero lexicon-charged words at all ("The Dark Side of Noom") --
+      idiom carries the negative meaning, not any individual word
+  [26415082] "defense" scores +0.128 alone -- exact match to the full
+      title's score, confirmed as the sole driver (institutional
+      "on the defensive" reads negative to a human, positive to a lexicon)
+  [43002183] "amazon" (the company name) scores +0.1779 alone in VADER's
+      own lexicon, for reasons unrelated to this headline's actual content
+      ("flaked on their contract") -- confirmed by testing every other word
+      in the title individually (van/contract/rivian/their/buy/now/flaked
+      all score 0.0)
+
+None of these are fixable by adding more keywords without either (a)
+hand-coding a fix for this specific headline (eval-set tuning, explicitly
+avoided) or (b) a fundamentally different, context-aware method that's out
+of scope per the brief. See README "Remaining failure taxonomy" for the
+full classification of all 13 rows by root cause.

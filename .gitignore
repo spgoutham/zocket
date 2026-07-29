@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 venv/
 interview.md
+.DS_Store
 # Stage 5: the generated dataset is now committed (data/raw/, data/processed/,
 # summary.md) rather than relying only on the regenerate-it-yourself path --
 # both are true (`make run` reproduces it from scratch too), but a committed

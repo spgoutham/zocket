@@ -53,14 +53,31 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
         "version", "deliver", "launch",
     ],
     "regulatory": [
-        "lawsuit", "court", "fcc", "banned",
+        "lawsuit", "court", "fcc", "banned", "ban",
     ],
 }
 
 _FALLBACK_CATEGORY = "general"
 
+# Short keywords that are themselves a prefix of common unrelated words need
+# a *full* boundary (both sides), not just left-anchored -- e.g. "ban" is a
+# left-anchored prefix of "bank"/"banking"/"banner", which would otherwise
+# misfire on nearly every Chime (a bank) post. Found by testing this exact
+# collision after adding "ban" to `regulatory`, the same class of bug the
+# left-boundary switch itself fixed for "valuation" inside "Evaluation".
+#
+# "fee" is the same bug found a second time, in real crawled data rather
+# than by inspection: checked every "\bfee" hit across the dataset directly
+# (13 occurrences) -- 11 were "feedback"/"feel"/"feels"/"feeling", 2 were a
+# real "fee". Full boundary loses nothing real: "fees" (plural) doesn't
+# appear anywhere in the dataset, checked directly.
+_FULL_BOUNDARY_KEYWORDS = {"ban", "fee"}
+
 _CATEGORY_PATTERNS: dict[str, list[re.Pattern]] = {
-    category: [re.compile(rf"\b{re.escape(kw)}") for kw in keywords]
+    category: [
+        re.compile(rf"\b{re.escape(kw)}\b" if kw in _FULL_BOUNDARY_KEYWORDS else rf"\b{re.escape(kw)}")
+        for kw in keywords
+    ]
     for category, keywords in _CATEGORY_KEYWORDS.items()
 }
 

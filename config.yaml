@@ -82,6 +82,11 @@ classification:
     method: vader
     positive_threshold: 0.05
     negative_threshold: -0.05
+    # v2: nudges VADER's compound score for unambiguous company-event
+    # phrases VADER's word-lexicon is blind to (see pipeline/classify/
+    # sentiment.py docstring + README "Evaluate" for why and the eval
+    # numbers this was checked against). 0.0 disables it (v1 behavior).
+    event_adjustment: 0.35
   categories:
     # Small taxonomy fit to how people actually talk about consumer brands
     # like these (not a generic dev-tool taxonomy) -- see

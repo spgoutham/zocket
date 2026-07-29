@@ -1,6 +1,6 @@
 # Consumer Research Summary
 
-_Generated 2026-07-25 19:41 UTC_
+_Generated 2026-07-29 12:02 UTC_
 
 - **Records crawled this run (pre-dedup):** 243
 - **Records stored (deduped, all-time):** 240
@@ -14,20 +14,21 @@ _Generated 2026-07-25 19:41 UTC_
 |---|---|
 | General / Other | 118 |
 | Company & Business News | 57 |
-| Product Experience | 38 |
+| Product Experience | 39 |
 | Customer Service & Trust | 9 |
 | Marketing & Advertising | 9 |
-| Pricing & Subscription | 9 |
+| Pricing & Subscription | 7 |
+| Regulatory & Legal | 1 |
 
 ## Sentiment breakdown per topic
 
 | Topic | Positive | Neutral | Negative |
 |---|---|---|---|
-| Allbirds | 25 | 40 | 9 |
-| Chime | 8 | 11 | 3 |
-| Noom | 14 | 20 | 3 |
-| Oatly | 6 | 16 | 5 |
-| Rivian | 21 | 53 | 6 |
+| Allbirds | 25 | 39 | 10 |
+| Chime | 9 | 9 | 4 |
+| Noom | 16 | 16 | 5 |
+| Oatly | 9 | 12 | 6 |
+| Rivian | 23 | 50 | 7 |
 
 ## Top 3 items per topic (by reliability_score)
 
@@ -41,7 +42,7 @@ _Generated 2026-07-25 19:41 UTC_
 
 - **Show HN: Numscript, a declarative language to model financial transactions** (positive, Product Experience, reliability 1.00) — https://playground.numscript.org/
 - **Ask HN: Help I need advice on fraud** (negative, Customer Service & Trust, reliability 0.91)
-- **Proposal: HWIGS HN: How would I get started** (positive, Pricing & Subscription, reliability 0.52)
+- **Proposal: HWIGS HN: How would I get started** (positive, Product Experience, reliability 0.52)
 
 ### Noom
 

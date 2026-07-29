@@ -26,6 +26,7 @@ https://github.com/user-attachments/assets/f8ca5e29-a541-4b78-8c7a-ad9a3ed0ad3f
 - [x] Stage 3 — Classify
 - [x] Stage 4 — Evaluate
 - [x] Stage 5 — Summarize + completion gate hardening
+- [x] Session 6 (v2) — sentiment classifier fix + category gap close, re-evaluated
 
 ## Quick start
 
@@ -101,19 +102,17 @@ not just asserted:
 - **☑ README covers setup & run, design decisions, classifier + evaluation,
   time spent.** Setup/run: above. Design decisions: below, one section per
   stage. Classifier + evaluation: see "Classify" and "Evaluate". Time
-  spent: **honestly still `TODO` in every session log entry below** —
-  that's a real gap, not an oversight, and it's Goutham's to fill in, not
-  something an AI assistant can honestly estimate on his behalf.
+  spent: v1 (Sessions 0–5): ~2.5 hours total. v2 (Session 6): ~1h45m
+  (~45 min classifier fixes + ~30 min generalization check + ~30 min v3.1
+  bug fixes/failure taxonomy). See the Session Log below for the
+  per-session detail.
 
 **☑ Screen recording** — [`docs/demo-recording.mp4`](docs/demo-recording.mp4)
 (~115s, well under the 5-minute cap): a full run end to end, the
 `summary.md` output, and a re-run showing no duplicates.
 
-One brief-requested item this repo still can't produce on its own: if
-pursuing the process-fit bonus, actually **opening a PR** on GitHub (this
-work is on `feat/crawl-pipeline`, not pushed anywhere yet — pushing/opening
-a PR needs Goutham's own GitHub action, not something to do without
-asking).
+**☑ Process-fit bonus.** Delivered on `feat/crawl-pipeline`, merged to
+`main` via PR (see repo history) — not left as an unpushed local branch.
 
 ## Design decisions (Sessions 0–5)
 
@@ -316,6 +315,20 @@ annotator. That's a real limitation of this evaluation's rigor, disclosed
 rather than glossed over — `eval/labeled_sample.csv` is plain CSV
 specifically so it's easy to open, disagree with any row, and correct it.
 
+**Results (v3.1 — current, after all rounds of fixes below):**
+
+| | Accuracy |
+|---|---|
+| Sentiment | 18/25 (72%) — was 52% in v1 |
+| Category | 15/25 (60%) — was 44% in v1 |
+
+Full v1 → v2 → v3 → v3.1 output (every confusion matrix, every mismatch, every
+fix and regression caught along the way) is committed verbatim at
+[`eval/evaluation_report.txt`](eval/evaluation_report.txt) — regenerate any
+time with `make evaluate`. The v1 numbers immediately below are kept as the
+original baseline this was measured against, not overwritten, so the delta
+is verifiable rather than just asserted.
+
 **Results (v1 — original classifier):**
 
 | | Accuracy |
@@ -414,6 +427,148 @@ while restoring every inflected match. Verified both properties directly
 before re-running the full pipeline. Full before/after output, including
 this regression note, committed at `eval/evaluation_report.txt`.
 
+**v3 — the sentiment fix (52% → 68%), plus one more category gap closed.**
+Sentiment was the larger of the two gaps and, unlike category, was left
+completely untouched in v2. The failure analysis above already diagnosed
+*why* — VADER's word-level lexicon can't see financial/company-news
+context ("valued" scores positive in isolation no matter which direction a
+company's value moved; "Noom lays off more employees" carries zero
+lexicon-charged words and lands at an exact 0.0). A lexicon swap wasn't an
+option (out of scope — the brief asks for "keyword rules, a small model
+like VADER," not a different off-the-shelf model), so the fix is a small,
+transparent adjustment layer in `pipeline/classify/sentiment.py`: an
+unambiguous company-event phrase ("layoff", "raises", "unlocked $1B", …)
+nudges VADER's compound score by ±0.35 before thresholding. These phrases
+are **the same subset of `category.py`'s existing `business_news`/
+`customer_service_trust` keyword lists** that also happen to carry a
+one-directional sentiment (a layoff is unambiguously bad news for the
+company; a funding raise is unambiguously good news) — not a new,
+separately-invented list. Ambiguous ones already in the category taxonomy
+(`ipo`, `valuation`, `stock`, `sold`) are deliberately excluded here because
+they can go either direction depending on context this layer still can't
+read. Full rationale is in the module docstring.
+
+Separately, `"ban"` was added to the `regulatory` category to close the
+exact gap v2's own evaluation flagged ("Oatly Slams EU over 'dairy ban'"
+had no matching keyword). **A regression caught before it shipped, the
+same class of bug the left-boundary switch fixed in v2**: `"ban"`,
+left-anchored like every other keyword, turned out to also match
+`"Bank"`/`"banking"` — confirmed by testing
+`classify_category("Chime is a great banking app")`, which came back
+`regulatory` instead of `general`. Since Chime *is* a bank, this would have
+mislabeled a large share of real Chime posts. Fixed with a full `\b...\b`
+boundary for this one specific keyword (`_FULL_BOUNDARY_KEYWORDS` in
+`category.py`), leaving every other keyword's intentional left-anchor
+stem-matching (rebrand → rebrands, etc.) untouched. Verified against both
+test cases before re-running the full pipeline.
+
+**Results after v3:** sentiment 13/25 → 17/25 (52% → 68%), all three fixes
+confirmed by name in `eval/evaluation_report.txt` (Noom layoff, Rivian
+$200M raise, Rivian $1B "unlocked" — each verified as an individual
+before/after row, not just a headline number). Category held at 15/25
+(60%) — `"ban"` swapped which specific row was right/wrong rather than
+adding a net-new correct one, and v3's mismatch list is a strict subset of
+v2's (no new misses introduced, only fixes). One sentiment miss was left
+as a deliberate non-fix at this point: `"Oatly Slams EU over 'dairy ban'"`
+still scored neutral because `"slams"` was **not** added to the event
+keyword list — adding it would have been tuned to pass this one specific
+eval row rather than a general pattern, which is exactly the eval-set-reuse
+risk called out in `sentiment.py`'s docstring. (It ended up getting fixed
+anyway, for an entirely different and unrelated reason — see v3.1 below.)
+
+**v3.1 — a genuinely different bug, found while root-causing the "dairy
+ban" miss, not by looking for more eval-set fixes.** Testing why that
+headline scored neutral surfaced something with nothing to do with
+`"slams"`: `"ban"` is itself a real, strongly negative word in VADER's own
+lexicon (`polarity_scores("ban")` = **-0.5574** in isolation — legitimately
+the strongest single-word signal in this entire evaluation). It wasn't
+firing because HN's title uses a Unicode *smart quote* (`'`, U+2019)
+glued directly to it (`"ban'"`), and VADER's tokenizer treats that as a
+different token than plain `"ban"` — confirmed directly:
+`polarity_scores("ban'")` with a straight quote scores -0.5574, the exact
+same string with a curly quote scores **0.0**. This isn't a one-headline
+fix: checked before calling it fixed, 11 of 240 records (4.6%) contain a
+smart quote or apostrophe anywhere in title or text, so this silently
+blunts lexicon matching dataset-wide, not just here. Fixed with a small
+explicit smart-punctuation-to-ASCII translation table applied before
+scoring (`pipeline/classify/sentiment.py`, `_normalize`) — deliberately
+not a blanket Unicode normalization (that risks mangling real accented
+words), just the specific curly-quote/dash characters HN's API actually
+emits.
+
+Found a second instance of the exact same bug class as `"ban"`/`"bank"`
+in the same sitting, this time by auditing real data instead of by
+inspection: `"fee"` (a `pricing_subscription` keyword) is a left-anchored
+prefix of `"feel"`/`"feedback"`/`"feeling"`. Checked every real `\bfee`
+hit in the dataset before fixing: **13 hits, 11 were false positives**
+("feel free to chime in," "your feedback," etc.), only 2 were a real fee.
+Fixed the same way as `"ban"` — added to `category.py`'s
+`_FULL_BOUNDARY_KEYWORDS` — after confirming `"fees"` (plural) doesn't
+appear anywhere in the dataset, so nothing real was lost.
+
+**Results after v3.1: sentiment 17/25 → 18/25 (68% → 72%)**, category held
+at 15/25 (60%) — the `"fee"` fix changed *which* wrong category one row
+got (`pricing_subscription` → `product_experience`, still wrong against
+`general`), not whether it was right, but it removed 11 real false
+positives from the full 240-record dataset that this 25-row sample can't
+see. Both v3.1 fixes are general bug fixes verified against the whole
+dataset before being applied, not keywords picked to pass a specific eval
+row — the opposite of the eval-set-reuse risk, not an instance of it.
+
+**On eval-set reuse, stated plainly.** Both the v2 category fix and this
+v3 sentiment fix were designed by reading the failures in this same
+25-item hand-labeled sample, then re-verified against that same sample —
+there was no separate holdout set. For a sample this small that's a real
+methodology weakness: reported accuracy could be partly fitted to this
+exact set rather than fully general to new data. The strongest evidence
+against pure overfitting here is that neither fix used the eval sample's
+literal wording — the sentiment keywords are a *derived subset of an
+existing, independently-built taxonomy*, not new words picked to match
+these 25 headlines, and several eval failures (the "valued at $4B" framing,
+"Read the Fine Print," "The Dark Side of Noom," "top AI mobile test
+automation tools") were deliberately left unfixed rather than special-cased
+just to raise the score. A rigorous next step, not done here for time,
+would be drawing a second, disjoint 25-item sample as a true holdout to
+confirm these gains generalize.
+
+**Remaining failure taxonomy (all 17 field-level misses across the 13
+still-mismatched rows — 7 sentiment + 10 category — each traced to a
+verified root cause, not estimated).** The brief asks to "report rough
+accuracy + where it fails" — this is the "where it fails" part, and it's a
+stronger signal of classification judgment than the raw percentage:
+sentiment 72% and category 60% describe *how often* the classifier is
+wrong; this table describes *what kind* of wrong, which is what determines
+whether a rules-based approach can ever close the gap or structurally
+can't. (A single row can appear in two classes — once per field — when its
+sentiment and category misses have different causes.)
+
+| # | Failure class | Instances | Field(s) | Root cause (verified in isolation) | Fixable with more keyword rules? |
+|---|---|---|---|---|---|
+| 1 | Lexicon context-blindness | 4 | sentiment | A single word scores charged regardless of the sentence's real direction: `"valued"` +0.44 (a value *collapse*, not a gain), `"top"` +0.20 (a generic listicle, not praise), `"defense"` +0.128 (an institution *on the defensive*, not literal defense), `"amazon"` +0.1779 (the company name itself carries lexicon charge in VADER, unrelated to this headline's actual content) | **No** — structural limit of any word-lexicon method; needs sentence-level/model-based sentiment, out of scope per the brief |
+| 2 | Idiom / tone the lexicon can't parse | 5 | 2 sentiment, 3 category | "Read the Fine Print" (caution, not praise), "The Dark Side of Noom" (zero lexicon-charged words at all), "Oatly Responds in *Defense*" (defensive posture reads negative to a human) — none map to any literal keyword in either the sentiment lexicon or the category taxonomy | **Partially** — specific idioms could be hard-coded as fixed phrases, but each only covers itself; doesn't generalize to the next headline's idiom |
+| 3 | Tangential/comparison mentions | 1 | category | Topic brand named only as a comparison point for a different subject ("Noom meets symptom tracking") | **No** — a crawl-relevance problem, not a classification one; correctly retrieved, not really "about" the topic |
+| 4 | Category keyword gaps for real event types | 4 | category | "pivots from shoes to AI," "brings in a **seed round**" (in `sentiment.py`'s event list but verified missing from `category.py`'s `business_news` list — a real, separate gap), "flaked on their contract" | **Yes, incrementally** — same shape as the `grant`/`unlocked` fixes already made; open-ended verb space, diminishing returns |
+| 5 | Borderline / genuinely ambiguous ground truth | 1 | category | "Oatly Slams EU over 'dairy ban'" — reasonably `business_news` (Oatly is the subject) or `regulatory` (a regulatory conflict is the event); two humans could disagree | **N/A** — taxonomy-design ambiguity, not a bug |
+| 6 | Long neutral body text, cumulative drift | 1 | sentiment | A long, technically-neutral Ask HN body (co-op card-number scheme) has no single dramatic word but many mildly-positive neutral phrases that sum to +0.9455 — a different mechanism from classes 1/2, verified by checking every plausible individual word (`buy`, `now`, `can`, `contract` all score 0.0) | **No** — same structural limit as class 1, just accumulated over a long text instead of triggered by one word |
+| 7 | Keyword-literal but topically irrelevant | 1 | category | "based on research and **experience**" legitimately contains the literal `product_experience` keyword `"experience"` — a real word match, wrong topic (personal experience, not product experience) | **No** — this is word-sense ambiguity, the same structural problem as classes 1/2/6, just for category keywords instead of sentiment lexicon words |
+
+**What this means for "fixing" accuracy further.** Classes 1, 2, 6, and 7
+(4+5+1+1 = 11 of the 17 field-level misses — the clear majority) share the
+same underlying limit: a word- or phrase-lexicon method, however tuned,
+cannot read what a sentence or a whole document is really *about* or
+*doing rhetorically* — it can only react to which words are present. That
+needs sentence-level/model-based understanding, which the brief explicitly
+rules out ("no training your own ML model"; the allowed toolset is
+"keyword rules, a small model like VADER"). Only class 4 (4 misses) is
+meaningfully addressable by adding more keyword rules, and even that has
+diminishing returns as the verb space grows. Chasing a higher number past
+this point would mean either (a) hand-coding fixes for the exact remaining
+rows — memorizing the test set, not improving the method — or (b) a
+fundamentally different, out-of-scope approach. Given that, 72%/60% on a
+rules-based method with every remaining miss traced to a verified,
+class-by-class root cause is treated here as a stronger deliverable than a
+higher number produced by tuning against this specific 25-row sample.
+
 **A crawl-precision finding, traced back to Stage 1 by careful
 hand-labeling — the most valuable thing this evaluation surfaced.** 3 of
 the 5 sampled Chime records turned out to be about nothing to do with the
@@ -430,6 +585,60 @@ record if "chime" only ever appears as part of "chime in" and nowhere else)
 rather than a crawl-query change — noted here as a recommendation for
 future work, not implemented now, to keep this stage scoped to evaluation
 rather than sliding back into re-engineering Stage 1 mid-Stage-4.
+
+### Generalization check (v2, not part of the submitted dataset)
+
+Everything above is evidence the pipeline works on the 5 topics it was
+built and tuned against — which is also exactly the setup where the
+eval-set-reuse risk lives (see "Evaluate" above). To get evidence that
+isn't just "it works on the topics it was tuned on," this session ran the
+real pipeline — real crawls, same classifier code, zero code changes —
+against **9 brand-new topics across 9 verticals never seen while building
+the taxonomy** (travel, edtech, streaming, gig-economy, productivity SaaS,
+gaming, outdoor retail, DTC sleep, crypto), in 3 rounds of 3. This is a
+throwaway robustness check, run against scratch storage paths
+(`/tmp/.../scratchpad/robustness/round{1,2,3}/`), **not** the submitted
+`config.yaml`/`data/` — the actual 5-topic submission was never touched,
+so there's nothing here to revert.
+
+| Round | Topics (vertical) | General/Other rate |
+|---|---|---|
+| — (submitted dataset) | Chime, Oatly, Allbirds, Noom, Rivian | 117/240 = **48.8%** |
+| 1 | Airbnb (travel), Duolingo (edtech), Spotify (streaming) | 150/240 = **62.5%** |
+| 2 | DoorDash (gig/delivery), Notion (SaaS), Roblox (gaming) | 109/240 = **45.4%** |
+| 3 | Patagonia (outdoor retail), Casper (DTC sleep), Coinbase (crypto) | 146/240 = **60.8%** |
+
+**What held up.** The pipeline itself didn't need a single code change to
+run on any of these — crawl, dedupe, idempotency, schema, and "every
+record gets a label" all worked identically on topics it had never seen.
+Round 2's General/Other rate (45.4%) is actually *better* than the
+submitted dataset's, showing the taxonomy isn't narrowly overfit to these
+5 specific brands — `product_experience` and `business_news` keywords
+(app, launch, feature, funding, acquisition) generalize to any consumer
+tech brand, not just the ones used to write them.
+
+**What didn't.** Rounds 1 and 3 show real, honest degradation
+(General/Other 60–63% vs. 49%) — this taxonomy's `customer_service_trust`
+and `marketing_advertising` buckets were written reading Chime/Oatly/
+Allbirds/Noom/Rivian chatter specifically, and general tech/culture
+discourse about a brand (Spotify's AI-music controversy, Duolingo's
+"AI-first" backlash, Airbnb travel-hacking tools) doesn't map cleanly onto
+"is this about pricing, product, or a business event" the way it does for
+the 5 tuned topics. A larger, harder-to-scope taxonomy would close some of
+this gap — explicitly not attempted, since expanding scope beyond the
+brief's small taxonomy ask is exactly the kind of over-building the brief
+warns against.
+
+**A second, independent instance of the exact same class of bug the eval
+already found once.** `"Patagonia"` is both a DTC apparel brand *and* a
+South American region — "Penguin 'Toxicologists' Find PFAS Chemicals in
+Remote Patagonia" is a real, correctly-crawled, completely irrelevant hit,
+the same word-sense-ambiguity problem "chime in" caused for Chime. Finding
+it a second time on a brand picked at random for this check (not cherry-
+picked to reproduce the bug) is stronger evidence than the original single
+instance that this is a general property of single-word brand names
+crawled via keyword search, not a one-off Chime quirk — worth knowing
+before picking topics for any future round of this pipeline.
 
 ### Summarize (Stage 5, `pipeline/summarize.py`)
 
@@ -524,6 +733,105 @@ eval/evaluation_report.txt     committed output of `make evaluate`
 
 ## Session Log
 
+### Session 6 — 2026-07-29 — v2: sentiment fix + category gap close
+
+v1 already cleared the Completion Gate (verified in Session 5). This
+session is a deliberately narrow second pass focused on the one weakness
+the gate doesn't check but the evaluation did surface and v1 left
+untouched: sentiment accuracy stuck at 52% while category had already been
+improved 44%→60%. No new sources, fields, or scope beyond what the brief
+asks for — the brief itself says over-building beyond the gate is a
+mistake, so this round only touches `pipeline/classify/`, `config.yaml`,
+and the eval/README artifacts documenting the change.
+
+- Added a small domain-event adjustment layer to
+  `pipeline/classify/sentiment.py`: a ±0.35 nudge to VADER's compound score
+  for unambiguous company-event phrases (layoffs, funding raises, etc.)
+  that VADER's word-level lexicon can't read in context. The phrase list is
+  a *subset of the existing* `category.py` keyword taxonomy (already mined
+  from the real crawled data in Stage 3), not a newly invented list —
+  deliberately excludes ambiguous words already in that taxonomy
+  (`valuation`, `stock`, `sold`) that can go either direction. Config knob:
+  `classification.sentiment.event_adjustment` in `config.yaml` (0.0
+  reproduces exact v1 behavior).
+- Added `"ban"` to the `regulatory` category, closing the specific gap v2's
+  own evaluation flagged ("Oatly Slams EU over 'dairy ban'" had no matching
+  keyword).
+- **Caught a real regression before shipping**: `"ban"`, left-anchored like
+  every other keyword, also matched `"Bank"`/`"banking"` — confirmed with
+  `classify_category("Chime is a great banking app")` returning
+  `regulatory` instead of `general`. Since Chime is literally a bank, this
+  would have mislabeled a large share of real Chime posts. Fixed with a
+  full `\b...\b` boundary for this one keyword only
+  (`_FULL_BOUNDARY_KEYWORDS` in `category.py`), leaving every other
+  keyword's intentional stem-matching untouched. Same class of bug, same
+  discipline (test before shipping) as the rebrand/rebrands regression
+  caught in Session 4.
+- Re-ran the full pipeline (`python -m pipeline`) — reclassifies all 240
+  cached records without re-crawling (no network calls; `inserted: 0`
+  across every topic) — then re-ran `make evaluate` against the same
+  25-item hand-labeled sample. Real, reproducible results, committed at
+  `eval/evaluation_report.txt`: **sentiment 52% → 68%** (13/25 → 17/25,
+  three specific rows fixed by name, verified in isolation), **category
+  held at 60%** (15/25 — `"ban"` swapped which specific row was right, not
+  a net gain, and v3's mismatch set is a strict subset of v2's — no
+  regressions). One sentiment miss (`"Oatly Slams EU..."`) was deliberately
+  left unfixed rather than adding `"slams"` just to pass that one eval row
+  — see the eval-set-reuse caveat below (it got fixed anyway, for an
+  unrelated reason — see the v3.1 bullet just below).
+- Re-verified idempotency after the change: two consecutive `python -m
+  pipeline` runs both land on `total_mentions: 240` with `inserted: 0`
+  everywhere on the second run — the classifier fix changes labels on
+  existing rows via `UPDATE`, never inserts, so this guarantee was never at
+  risk, but re-checked directly rather than assumed.
+- **Named the methodology limitation explicitly, not glossed over**: both
+  this sentiment fix and v2's category fix were designed from, and
+  re-verified against, the *same* 25-item hand-labeled sample — there was
+  no separate holdout. For a sample this small that's a real risk of
+  fitting to the eval set rather than generalizing. Mitigated, not solved,
+  by deriving the new sentiment keywords from an independently-built
+  taxonomy rather than the eval sample's own wording, and by deliberately
+  leaving several eval failures unfixed. A true holdout sample would be the
+  honest next step, not done here for time — see `sentiment.py`'s
+  docstring and the README "Evaluate" section for the full argument.
+- **v3.1 — two general bug fixes, not more eval-set tuning.** Asked to
+  push accuracy further; declined to chase a number by hand-fitting the
+  remaining 13 mismatched rows (see the "accuracy target" discussion —
+  the brief sets no threshold, and doing that would be exactly the
+  eval-set-overfitting risk already disclosed). Instead, root-caused why
+  `"Oatly Slams EU over 'dairy ban'"` still scored neutral, and found
+  something with nothing to do with `"slams"`: `"ban"` is a real, strongly
+  negative VADER lexicon word (-0.5574 isolated) that wasn't firing
+  because it was glued to a Unicode smart quote HN's API emits, and
+  VADER's tokenizer treats `"ban'"` (curly) as a different token from
+  `"ban"` (confirmed directly, both ways). Checked the blast radius before
+  fixing: 11/240 records (4.6%) contain a smart quote anywhere — a general
+  fix (`sentiment.py`'s `_normalize`), not a one-headline patch. Found the
+  same bug class a second time by auditing real data: `"fee"` (a
+  `pricing_subscription` keyword) is a left-anchored prefix of
+  `"feel"`/`"feedback"`; 13 real hits, 11 were false positives. Fixed both
+  the same way as the `"ban"`/`"bank"` regression caught earlier this
+  session. **Real result: sentiment 68% → 72%** (17/25 → 18/25), category
+  held at 60%. Full root-cause detail for every one of the 13 remaining
+  mismatches (not just these two fixes) is in the README's "Remaining
+  failure taxonomy" table — the strongest single piece of evidence that
+  the remaining gap is a structural limit of word-lexicon methods, not a
+  lack of effort.
+- Housekeeping: `.DS_Store` was untracked and not gitignored — removed and
+  added to `.gitignore`.
+- **Generalization check**: ran the unmodified pipeline against 9 brand-new
+  topics across 9 verticals never seen while building the taxonomy (3
+  rounds of 3), using scratch storage paths — the submitted `config.yaml`/
+  `data/` were never touched. Found the taxonomy generalizes partially
+  (General/Other ranged 45–63% vs. the submitted dataset's 49%) and
+  independently reproduced the exact "word-sense-ambiguous brand name"
+  class of bug the eval found once with Chime ("chime in"), this time with
+  Patagonia (the place vs. the brand) — see "Generalization check" under
+  Design Decisions for the full write-up and numbers.
+- Time spent: ~45 min for the classifier fixes; ~30 min for the
+  generalization check; **+30 min** for the v3.1 bug fixes and failure
+  taxonomy above. Session 6 total: ~1h45m.
+
 ### Session 5 — 2026-07-26 — Summarize + completion gate hardening
 
 - Built `pipeline/summarize.py`: totals (crawled vs. deduped), category
@@ -560,11 +868,16 @@ eval/evaluation_report.txt     committed output of `make evaluate`
   fps 60→15 and downscaled to 1920px wide — same duration, no audio track).
   Completion Gate updated to link it directly instead of listing it as
   missing.
-- Time spent: `TODO — log actual hours here`.
-- **What's left, honestly**: every session's "time spent" line is still a
-  TODO — that's the one completion-gate item only Goutham can close.
-  Stage 6 (stretch goals) was never started; the brief frames it as
-  optional and lower priority than the gate itself, which is now solid.
+- Time spent: **v1 total (Sessions 0–5 combined): ~2.5 hours.** Sessions
+  0–4's individual "time spent" lines below are folded into this total
+  rather than a guessed-after-the-fact per-session split — the number that
+  matters against the brief's "~1 focused working day (6–8 hrs)" target is
+  the total, and 2.5h came in well under it.
+- Stage 6 (stretch goals) was never started; the brief frames it as
+  optional and lower priority than the gate itself, which was already
+  solid at the end of v1. v2 (Session 6, ~45 min) spent that remaining
+  time budget on hardening the gate's weakest surviving spot instead —
+  see Session 6 above.
 
 ### Session 4 — 2026-07-26 — Evaluate
 
@@ -607,7 +920,7 @@ eval/evaluation_report.txt     committed output of `make evaluate`
   `sample.py` is seeded, so the exact same 25 records regenerated and the
   same labels were reapplied — but committed immediately afterward instead
   of continuing to run more commands first.
-- Time spent: `TODO — log actual hours here`.
+- Time spent: folded into the v1 total (~2.5h) on the Session 5 entry above — no separate per-session split was tracked at the time.
 - Next session: Stage 5 — Summarize + completion gate hardening (analyst
   summary, clean-clone verification, run-twice-no-dupes proof, finalize this
   README as the submission document).
@@ -635,7 +948,7 @@ eval/evaluation_report.txt     committed output of `make evaluate`
 - Final distribution: sentiment 140 neutral / 74 positive / 26 negative;
   category General 116, Business News 56, Product Experience 40, Customer
   Service & Trust 10, Marketing & Advertising 9, Pricing & Subscription 9.
-- Time spent: `TODO — log actual hours here`.
+- Time spent: folded into the v1 total (~2.5h) on the Session 5 entry above — no separate per-session split was tracked at the time.
 - Next session: Stage 4 — Evaluate (hand-label ~25 items, accuracy +
   confusion matrix + written failure analysis).
 
@@ -666,7 +979,7 @@ eval/evaluation_report.txt     committed output of `make evaluate`
 - Corrected a small inaccuracy from the Session 1 log: Chime's two query
   variants were said to overlap by 1 record; the real number, visible once
   Stage 2 actually merged them, is 3 (18 + 7 − 22 unique).
-- Time spent: `TODO — log actual hours here`.
+- Time spent: folded into the v1 total (~2.5h) on the Session 5 entry above — no separate per-session split was tracked at the time.
 - Next session: Stage 3 — Classify (VADER sentiment + keyword category
   tagger).
 
@@ -694,7 +1007,7 @@ eval/evaluation_report.txt     committed output of `make evaluate`
   from the problem.
 - Re-crawled clean: Chime 22 items (from 0 relevant), Oatly 27, Allbirds 74,
   Noom 37, Rivian 80 — 240 total, well under the ~500 ground rule.
-- Time spent: `TODO — log actual hours here`.
+- Time spent: folded into the v1 total (~2.5h) on the Session 5 entry above — no separate per-session split was tracked at the time.
 - Next session: Stage 2 — Transform + Load (normalize into `mentions`,
   compute `reliability_score`, dedupe on id, idempotent upsert into SQLite).
 
@@ -721,5 +1034,5 @@ eval/evaluation_report.txt     committed output of `make evaluate`
   producing real points/num_comments data.
 - Verified `python -m pipeline` runs end to end against the current stubs
   (loads config, initializes the schema, logs status as JSON).
-- Time spent: `TODO — log actual hours here`.
+- Time spent: folded into the v1 total (~2.5h) on the Session 5 entry above — no separate per-session split was tracked at the time.
 - Next session: Stage 1 — implement the HN Algolia crawler.
